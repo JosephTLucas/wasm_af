@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go run:*)",
+      "Bash(cd /Users/jolucas/wasm_af/components && cargo build --target wasm32-wasip2 --release -p web-search 2>&1)",
+      "Bash(source ~/.cargo/env && cd /Users/jolucas/wasm_af/components && cargo build --target wasm32-wasip2 --release -p web-search 2>&1)",
+      "Bash(source ~/.cargo/env && wasm-tools validate /Users/jolucas/wasm_af/components/target/wasm32-wasip2/release/web_search.wasm 2>&1 && echo \"VALID\")",
+      "Bash(source ~/.cargo/env && cargo build --target wasm32-wasip2 --release -p summarizer 2>&1)",
+      "Bash(source ~/.cargo/env && wasm-tools component wit /Users/jolucas/wasm_af/components/target/wasm32-wasip2/release/web_search.wasm 2>&1)",
+      "Bash(source ~/.cargo/env && wasm-tools component wit /Users/jolucas/wasm_af/components/target/wasm32-wasip2/release/summarizer.wasm 2>&1)",
+      "Bash(source ~/.cargo/env && cd /Users/jolucas/wasm_af && go build ./... 2>&1)",
+      "Bash(source ~/.cargo/env && go build ./... 2>&1)",
+      "Bash(chmod +x /Users/jolucas/wasm_af/deploy/setup.sh)",
+      "Bash(chmod +x /Users/jolucas/wasm_af/deploy/test/negative_tests.sh)",
+      "Bash(source ~/.cargo/env && go build ./... 2>&1 && echo \"Go: OK\" && cd components && cargo build --target wasm32-wasip2 --release 2>&1 | tail -5)",
+      "Bash(source ~/.cargo/env && cargo build --target wasm32-wasip2 --release -p web-search 2>&1 | tail -3)",
+      "WebFetch(domain:github.com)",
+      "Bash(find /Users/jolucas -name \"*.wit\" 2>/dev/null | xargs grep -l \"secrets\\\\|secret\" 2>/dev/null | head -10)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(go build ./provider/orchestrator/ ./provider/llm-inference/ 2>&1)",
+      "Bash(export PATH=\"$HOME/.cargo/bin:$PATH\" && cd /Users/jolucas/wasm_af/components && cargo build --target wasm32-wasip2 --release -p web-search 2>&1)",
+      "Bash(export PATH=\"$HOME/.cargo/bin:$PATH\" && wasm-tools validate --features component-model /Users/jolucas/wasm_af/components/target/wasm32-wasip2/release/web_search.wasm 2>&1 && echo \"OK\")",
+      "Bash(export PATH=\"$HOME/.cargo/bin:$PATH\" && cargo build --target wasm32-wasip2 --release -p policy-engine -p web-search -p summarizer 2>&1)",
+      "Bash(export PATH=\"$HOME/.cargo/bin:$PATH\" && cargo test -p policy-engine 2>&1)",
+      "Bash(export PATH=\"$HOME/.cargo/bin:$PATH\" && cd /Users/jolucas/wasm_af && go build ./provider/orchestrator/ ./provider/llm-inference/ 2>&1 && echo \"Go providers: OK\")"
+    ]
+  }
+}

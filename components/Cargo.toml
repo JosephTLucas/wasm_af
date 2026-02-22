@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = [
+    "policy-engine",
+    "agents/web-search",
+    "agents/summarizer",
+]
+
+[profile.release]
+opt-level = "s"   # optimize for size — WASM binaries ship over the wire
+lto = true
+codegen-units = 1
+strip = true

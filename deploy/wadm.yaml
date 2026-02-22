@@ -1,0 +1,136 @@
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: wasm-af-demo
+  annotations:
+    version: v0.1.0
+    description: >
+      wasm-af agent framework — policy-gated, orchestrated WASM agents over
+      wasmCloud. Runs a web-search + summarizer pipeline for a research task.
+spec:
+  components:
+
+    # -------------------------------------------------------------------------
+    # Policy Engine (Rust WASM component)
+    # Reads policy-rules from wasi:config/runtime. Exports wasm-af:policy/evaluator.
+    # The orchestrator calls evaluate() over wRPC when gating any capability link.
+    # -------------------------------------------------------------------------
+    - name: policy-engine
+      type: component
+      properties:
+        image: localhost:5000/wasm-af/policy-engine:0.1.0
+        # Named config supplies the JSON policy rules at evaluate-time.
+        config:
+          - name: policy-rules-config
+      traits:
+        - type: spreadscaler
+          properties:
+            replicas: 1
+
+    # -------------------------------------------------------------------------
+    # Web-Search Agent (Rust WASM component)
+    # Exports wasm-af:agent/handler. Imports wasi:http/outgoing-handler (→ http-client).
+    # Instantiated per-step by the orchestrator; removed after the step completes.
+    # The spreadscaler replica count is 0 — the orchestrator scales it on demand.
+    # -------------------------------------------------------------------------
+    - name: web-search
+      type: component
+      properties:
+        image: localhost:5000/wasm-af/web-search:0.1.0
+        config:
+          - name: web-search-config
+        secrets:
+          - name: brave-secrets   # delivers brave_api_key via wasmcloud:secrets/store
+      traits:
+        - type: spreadscaler
+          properties:
+            replicas: 0    # orchestrator scales on demand
+        # Capability link: web-search → http-client for outgoing HTTP requests.
+        # SourceConfig.allowed_hosts restricts which domains may be contacted.
+        # The current wasmcloud/http-client provider does not enforce this key;
+        # enforcement is at the application level in the agent until a custom
+        # wasi:http/outgoing-handler provider that reads SourceConfig is deployed.
+        - type: link
+          properties:
+            name: default
+            source:
+              config:
+                - name: web-search-http-policy
+            target:
+              name: http-client
+            namespace: wasi
+            package: http
+            interfaces: [outgoing-handler]
+
+    # -------------------------------------------------------------------------
+    # Summarizer Agent (Rust WASM component)
+    # Exports wasm-af:agent/handler. Imports wasm-af:llm/inference (→ llm-inference).
+    # Scaled on demand by the orchestrator.
+    # -------------------------------------------------------------------------
+    - name: summarizer
+      type: component
+      properties:
+        image: localhost:5000/wasm-af/summarizer:0.1.0
+      traits:
+        - type: spreadscaler
+          properties:
+            replicas: 0    # orchestrator scales on demand
+        # Capability link: summarizer → llm-inference for LLM completions.
+        - type: link
+          properties:
+            name: default
+            target:
+              name: llm-inference
+              config:
+                - name: llm-config
+              secrets:
+                - name: llm-secrets
+            namespace: wasm-af
+            package: llm
+            interfaces: [inference]
+
+    # -------------------------------------------------------------------------
+    # Orchestrator Provider (Go binary)
+    # Drives the task lifecycle: policy gate → start agent → link → invoke → stop.
+    # Exposes POST /tasks and GET /tasks/{id} on :8080.
+    # Config keys: policy_engine_id, llm_provider_id, http_provider_id, agent.<type>
+    # -------------------------------------------------------------------------
+    - name: orchestrator
+      type: capability
+      properties:
+        image: localhost:5000/wasm-af/orchestrator:0.1.0
+        config:
+          - name: orchestrator-config
+      traits:
+        - type: spreadscaler
+          properties:
+            replicas: 1
+
+    # -------------------------------------------------------------------------
+    # LLM Inference Provider (Go binary)
+    # Routes wasm-af:llm/inference.complete to an OpenAI-compatible upstream.
+    # API key is read from the "llm-secrets" named secret on the per-link config.
+    # -------------------------------------------------------------------------
+    - name: llm-inference
+      type: capability
+      properties:
+        image: localhost:5000/wasm-af/llm-inference:0.1.0
+      traits:
+        - type: spreadscaler
+          properties:
+            replicas: 1
+
+    # -------------------------------------------------------------------------
+    # HTTP Client Provider (wasmCloud built-in)
+    # Satisfies wasi:http/outgoing-handler for agent components that make outgoing
+    # HTTP requests (web-search calls Brave Search through this provider).
+    # -------------------------------------------------------------------------
+    - name: http-client
+      type: capability
+      properties:
+        # Use the wasmCloud-maintained stable http-client provider.
+        image: ghcr.io/wasmcloud/http-client:0.12.1
+      traits:
+        - type: spreadscaler
+          properties:
+            replicas: 1

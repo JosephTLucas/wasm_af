@@ -1,0 +1,74 @@
+package wasm-af:policy@0.1.0;
+
+/// Policy evaluation interface exported by the policy-engine component.
+/// The orchestrator calls `evaluate` before creating any capability link.
+interface evaluator {
+    /// The type of capability being requested.
+    enum capability {
+        /// Agent → HTTP client provider
+        http,
+        /// Agent → LLM inference provider
+        llm,
+        /// Agent → Key-value store provider
+        kv,
+        /// Agent → Agent (direct wRPC link; both ends are components)
+        agent-direct,
+    }
+
+    /// Describes the link the orchestrator is about to create.
+    record link-request {
+        /// wasmCloud component ID of the requesting agent.
+        source-component-id: string,
+        /// wasmCloud component ID or provider ID of the target.
+        target-component-id: string,
+        /// What capability is being linked.
+        capability: capability,
+        /// The task this link belongs to (for audit logging context).
+        task-id: string,
+    }
+
+    /// How the orchestrator should route communication for a permitted pair.
+    enum comms-mode {
+        /// All data passes through the orchestrator.  The orchestrator calls
+        /// the target on behalf of the source; the two components never share
+        /// a direct wRPC link.
+        mediated,
+        /// The orchestrator creates a runtime wRPC link between source and
+        /// target.  The source component calls the target directly.  The
+        /// orchestrator tears the link down when the step completes.
+        direct,
+    }
+
+    /// Returned when a link is approved.
+    record permit {
+        comms-mode: comms-mode,
+    }
+
+    /// Returned when a link is denied.
+    record deny-reason {
+        /// Machine-readable denial code.
+        code: deny-code,
+        /// Human-readable explanation (logged to audit trail).
+        message: string,
+    }
+
+    enum deny-code {
+        /// The source/target pair is not in the allow-list.
+        not-allowed,
+        /// The requested capability type is not permitted for this source.
+        capability-not-permitted,
+        /// The policy config could not be loaded or parsed.
+        policy-config-error,
+    }
+
+    /// Evaluate whether a capability link should be permitted.
+    /// Called by the orchestrator before every PutLink.
+    evaluate: func(req: link-request) -> result<permit, deny-reason>;
+}
+
+/// World exported by the policy-engine component.
+world policy-engine {
+    export evaluator;
+    /// Config is supplied via wasmCloud runtime config (link config / secrets),
+    /// not as a function argument, so no additional imports are needed here.
+}

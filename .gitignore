@@ -1,0 +1,19 @@
+# Go
+bin/
+*.test
+*.out
+vendor/
+
+# Rust / WASM
+target/
+components/**/*.wasm
+
+# wasmCloud
+.wash/
+*.oci-cache/
+
+# Local OCI registry data
+registry-data/
+
+# OS
+.DS_Store

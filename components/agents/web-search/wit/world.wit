@@ -1,0 +1,23 @@
+package wasm-af:web-search-impl@0.1.0;
+
+/// Component world for the web-search agent.
+/// Exports the standard agent handler.
+/// WASI HTTP (wasi:http/outgoing-handler) is used directly from the `wasi` crate
+/// and appears in the compiled binary's import section without being listed here.
+world web-search-agent {
+    /// Shared types used by the handler interface (task-input, task-output, etc.)
+    import wasm-af:agent/types@0.1.0;
+
+    /// The agent handler that the orchestrator calls.
+    export wasm-af:agent/handler@0.1.0;
+
+    /// Read the URL allow-list from wasmCloud config.
+    import wasi:config/runtime@0.2.0-draft;
+
+    /// Brave Search API key — delivered via wasmCloud's secrets backend,
+    /// scoped to the link between this agent and the HTTP capability provider.
+    /// The orchestrator sets this up via the `brave-secrets` named secret;
+    /// the value never appears in plaintext named config.
+    import wasmcloud:secrets/store@0.1.0-draft;
+    import wasmcloud:secrets/reveal@0.1.0-draft;
+}

@@ -1,0 +1,14 @@
+package wasm-af:summarizer-impl@0.1.0;
+
+/// Component world for the summarizer agent.
+/// Exports the standard agent handler and imports the LLM inference capability.
+world summarizer-agent {
+    /// Shared types used by the handler interface.
+    import wasm-af:agent/types@0.1.0;
+
+    /// The agent handler that the orchestrator calls.
+    export wasm-af:agent/handler@0.1.0;
+
+    /// LLM inference — satisfied at runtime by the llm-inference provider link.
+    import wasm-af:llm/inference@0.1.0;
+}

@@ -1,0 +1,16 @@
+package wasi:config@0.2.0-draft;
+
+/// Runtime config interface provided by the wasmCloud host.
+/// Components read named config values set via WADM / `wash config put`.
+interface runtime {
+    variant error {
+        upstream(string),
+        io(string),
+    }
+
+    /// Get a single config value by key.
+    get: func(key: string) -> result<option<string>, error>;
+
+    /// Get all config values for this component.
+    get-all: func() -> result<list<tuple<string, string>>, error>;
+}
