@@ -10,21 +10,27 @@
 # Usage:
 #   ./examples/fan-out-summarizer/run.sh
 #   URLS="https://a.com,https://b.com" ./examples/fan-out-summarizer/run.sh
-set -euo pipefail
+set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
+
+# Ensure Rust toolchain is on PATH (not always sourced in non-interactive shells)
+[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
 URLS="${URLS:-https://webassembly.org,https://wasmcloud.com,https://bytecodealliance.org}"
 QUERY="${QUERY:-Compare these WebAssembly ecosystem projects}"
 ORCH_PID=""
 NATS_PID=""
+NATS_STARTED_BY_US=""
 
 cleanup() {
     [ -n "$ORCH_PID" ] && kill "$ORCH_PID" 2>/dev/null || true
-    [ -n "$NATS_PID" ] && kill "$NATS_PID" 2>/dev/null || true
+    [ -n "$NATS_STARTED_BY_US" ] && [ -n "$NATS_PID" ] && kill "$NATS_PID" 2>/dev/null || true
 }
 trap cleanup EXIT
+
+die() { echo "  ERROR: $1" >&2; exit 1; }
 
 # ── Header ────────────────────────────────────────────────────────────────────
 echo ""
@@ -38,39 +44,62 @@ echo "  [1/4] Building..."
 
 if ! rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-unknown; then
     echo "        Adding wasm32-unknown-unknown target..."
-    rustup target add wasm32-unknown-unknown >/dev/null 2>&1
+    if ! rustup target add wasm32-unknown-unknown; then
+        die "Failed to add wasm32-unknown-unknown target. Check your Rust installation."
+    fi
 fi
 
 echo "        Rust WASM plugins..."
-(cd components && cargo build --release 2>&1 | tail -1)
+if ! (cd components && cargo build --release 2>&1); then
+    die "Rust build failed."
+fi
 
 echo "        Go orchestrator..."
-go build -o ./bin/orchestrator ./provider/orchestrator/ 2>&1
+if ! go build -o ./bin/orchestrator ./provider/orchestrator/ 2>&1; then
+    die "Go build failed."
+fi
 echo "        Done."
 echo ""
 
 # ── 2. Start NATS ────────────────────────────────────────────────────────────
 echo "  [2/4] Starting NATS..."
 
-# Try nats-server directly, fall back to wash's bundled copy
-NATS_BIN=""
-if command -v nats-server >/dev/null 2>&1; then
-    NATS_BIN="nats-server"
-elif [ -x "$HOME/.local/share/wash/downloads/nats-server" ]; then
-    NATS_BIN="$HOME/.local/share/wash/downloads/nats-server"
+# Check if NATS is already running on 4222
+if curl -sf http://localhost:8222/varz >/dev/null 2>&1 || lsof -i :4222 -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "        NATS already running on :4222"
 else
-    echo "        ERROR: nats-server not found. Install NATS or run 'wash up' once to download it."
-    exit 1
-fi
+    NATS_BIN=""
+    if command -v nats-server >/dev/null 2>&1; then
+        NATS_BIN="nats-server"
+    elif [ -x "$HOME/.local/share/wash/downloads/nats-server" ]; then
+        NATS_BIN="$HOME/.local/share/wash/downloads/nats-server"
+    else
+        die "nats-server not found. Install NATS (https://nats.io) or run 'wash up' once to download it."
+    fi
 
-$NATS_BIN -js -p 4222 > /dev/null 2>&1 &
-NATS_PID=$!
-sleep 2
-echo "        NATS running (PID $NATS_PID)"
+    $NATS_BIN -js -p 4222 > /tmp/wasm-af-nats.log 2>&1 &
+    NATS_PID=$!
+    NATS_STARTED_BY_US="1"
+    sleep 2
+
+    if ! kill -0 "$NATS_PID" 2>/dev/null; then
+        echo "        NATS failed to start. Log:"
+        cat /tmp/wasm-af-nats.log
+        die "NATS failed."
+    fi
+    echo "        NATS started (PID $NATS_PID)"
+fi
 echo ""
 
 # ── 3. Start orchestrator ────────────────────────────────────────────────────
 echo "  [3/4] Starting orchestrator..."
+
+# Kill any stale orchestrator on :8080
+if lsof -ti:8080 >/dev/null 2>&1; then
+    echo "        Stopping stale process on :8080..."
+    lsof -ti:8080 | xargs kill 2>/dev/null || true
+    sleep 1
+fi
 
 POLICY_RULES_FILE="$ROOT/examples/fan-out-summarizer/policies.json" \
 LLM_MODE=mock \
@@ -80,8 +109,9 @@ ORCH_PID=$!
 sleep 2
 
 if ! curl -sf http://localhost:8080/healthz > /dev/null 2>&1; then
-    echo "        ERROR: orchestrator failed to start. Check /tmp/wasm-af-orchestrator.log"
-    exit 1
+    echo "        Orchestrator failed to start. Log:"
+    cat /tmp/wasm-af-orchestrator.log
+    die "Orchestrator failed."
 fi
 echo "        Orchestrator running (PID $ORCH_PID)"
 echo ""
@@ -106,14 +136,20 @@ TASK_ID=$(curl -sf -X POST http://localhost:8080/tasks \
         '{type: $type, query: $query, context: {urls: $urls}}')" \
     | jq -r '.task_id')
 
+if [ -z "$TASK_ID" ] || [ "$TASK_ID" = "null" ]; then
+    die "Failed to submit task. Is the orchestrator running?"
+fi
+
 echo "        Task ID: $TASK_ID"
 echo ""
 
 # Poll until complete
 echo "        Waiting for completion..."
-for i in $(seq 1 30); do
-    STATE=$(curl -sf "http://localhost:8080/tasks/${TASK_ID}")
-    STATUS=$(echo "$STATE" | jq -r '.status')
+STATUS="unknown"
+STATE=""
+for _ in $(seq 1 30); do
+    STATE=$(curl -sf "http://localhost:8080/tasks/${TASK_ID}" || echo '{}')
+    STATUS=$(echo "$STATE" | jq -r '.status // "unknown"')
 
     if [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ]; then
         break
@@ -126,6 +162,10 @@ if [ "$STATUS" = "failed" ]; then
     echo "  Task FAILED:"
     echo "$STATE" | jq -r '.error'
     exit 1
+fi
+
+if [ "$STATUS" != "completed" ]; then
+    die "Task did not complete within 60 seconds (status: $STATUS)"
 fi
 
 # ── Display results ──────────────────────────────────────────────────────────
@@ -150,13 +190,12 @@ echo "  Fetched Pages:"
 echo "  ──────────────"
 echo "$STATE" | jq -r '
     .plan[] | select(.agent_type == "url-fetch") |
-    .id as $id |
     (.id + ".output") as $key |
     $key' | while read -r key; do
-    RESULT=$(echo "$STATE" | jq -r --arg k "$key" '.results[$k]')
-    if [ "$RESULT" != "null" ]; then
+    RESULT=$(echo "$STATE" | jq -r --arg k "$key" '.results[$k] // empty')
+    if [ -n "$RESULT" ]; then
         TITLE=$(echo "$RESULT" | jq -r '.results[0].title // "unknown"')
-        URL=$(echo "$RESULT" | jq -r '.query')
+        URL=$(echo "$RESULT" | jq -r '.query // "unknown"')
         SNIPPET_LEN=$(echo "$RESULT" | jq -r '.results[0].snippet | length')
         echo "    $TITLE"
         echo "      URL: $URL"
@@ -168,13 +207,15 @@ done
 echo "  Summary (mock LLM):"
 echo "  ────────────────────"
 SUM_KEY=$(echo "$STATE" | jq -r '.plan[] | select(.agent_type == "summarizer") | .id + ".output"')
-echo "$STATE" | jq -r --arg k "$SUM_KEY" '.results[$k]' | jq -r '.summary' | head -5 | sed 's/^/    /'
+SUMMARY=$(echo "$STATE" | jq -r --arg k "$SUM_KEY" '.results[$k] // empty' | jq -r '.summary // "N/A"')
+echo "$SUMMARY" | head -5 | sed 's/^/    /'
 echo "    ..."
 echo ""
 
 echo "  Architecture:"
 echo "  ─────────────"
-echo "    3 url-fetch WASM plugins ran in parallel (separate Extism instances)"
+NUM_FETCHES=$(echo "$STATE" | jq '[.plan[] | select(.agent_type == "url-fetch")] | length')
+echo "    ${NUM_FETCHES} url-fetch WASM plugins ran in parallel (separate Extism instances)"
 echo "    Each was created -> invoked -> destroyed within its step"
 echo "    Each had a different allowed_hosts — enforced by the WASM runtime"
 echo "    Results merged by orchestrator, passed to summarizer as context"
