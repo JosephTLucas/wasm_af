@@ -1,8 +1,0 @@
-package wasm-af:policy-engine-impl@0.1.0;
-
-/// Component world for the policy engine.
-/// Exports our evaluator interface and imports WASI config to read policy rules.
-world policy-engine {
-    import wasi:config/runtime@0.2.0-draft;
-    export wasm-af:policy/evaluator@0.1.0;
-}

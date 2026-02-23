@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {
+      "source": "wasm-af:url-fetch",
+      "target": "*",
+      "capability": "http",
+      "comms_mode": "mediated"
+    },
+    {
+      "source": "wasm-af:web-search",
+      "target": "*",
+      "capability": "http",
+      "comms_mode": "mediated"
+    },
+    {
+      "source": "wasm-af:summarizer",
+      "target": "*",
+      "capability": "llm",
+      "comms_mode": "mediated"
+    }
+  ]
+}

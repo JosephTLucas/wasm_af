@@ -6,14 +6,11 @@ vendor/
 
 # Rust / WASM
 target/
-components/**/*.wasm
-
-# wasmCloud
-.wash/
-*.oci-cache/
-
-# Local OCI registry data
-registry-data/
+*.wasm
 
 # OS
 .DS_Store
+
+# Logs
+/tmp/
+*.log

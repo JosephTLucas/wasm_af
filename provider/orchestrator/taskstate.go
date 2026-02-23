@@ -5,23 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 
 	"github.com/jolucas/wasm-af/pkg/taskstate"
 )
 
 // SubmitTaskRequest is the JSON body for POST /tasks.
 type SubmitTaskRequest struct {
-	// Type is the top-level task category (e.g. "research").
-	Type string `json:"type"`
-	// Query is the user-supplied query string.
-	Query string `json:"query"`
-	// Context is optional additional KV context to inject into the task.
+	Type    string            `json:"type"`
+	Query   string            `json:"query"`
 	Context map[string]string `json:"context,omitempty"`
 }
 
@@ -30,12 +26,7 @@ type SubmitTaskResponse struct {
 	TaskID string `json:"task_id"`
 }
 
-// handleSubmitTask accepts a new task, persists its initial state, and
-// dispatches an asynchronous goroutine to run the agent loop.
 func (o *Orchestrator) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
-	ctx, span := tracer.Start(r.Context(), "orchestrator.submit_task")
-	defer span.End()
-
 	var req SubmitTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -47,23 +38,16 @@ func (o *Orchestrator) handleSubmitTask(w http.ResponseWriter, r *http.Request) 
 	}
 
 	taskID := uuid.New().String()
-	span.SetAttributes(
-		attribute.String("task.id", taskID),
-		attribute.String("task.type", req.Type),
-	)
 
-	// Build the initial plan based on task type.
-	plan, err := buildPlan(req.Type, taskID)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		http.Error(w, fmt.Sprintf("unsupported task type: %s", req.Type), http.StatusUnprocessableEntity)
-		return
+	taskCtx := map[string]string{"query": req.Query}
+	for k, v := range req.Context {
+		taskCtx[k] = v
 	}
 
-	ctx2 := map[string]string{"query": req.Query}
-	for k, v := range req.Context {
-		ctx2[k] = v
+	plan, err := buildPlan(req.Type, taskID, taskCtx)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("unsupported task type: %s", req.Type), http.StatusUnprocessableEntity)
+		return
 	}
 
 	state := &taskstate.TaskState{
@@ -71,27 +55,23 @@ func (o *Orchestrator) handleSubmitTask(w http.ResponseWriter, r *http.Request) 
 		Status:    taskstate.StatusPending,
 		Plan:      plan,
 		Results:   make(map[string]string),
-		Context:   ctx2,
+		Context:   taskCtx,
 		CreatedAt: time.Now().UTC(),
 	}
 
+	ctx := r.Context()
 	if err := o.store.Put(ctx, state); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
 		o.logger.Error("failed to persist initial task state", "task_id", taskID, "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 
-	if err := o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+	_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 		TaskID:    taskID,
 		EventType: taskstate.EventTaskCreated,
 		Message:   fmt.Sprintf("task created, type=%s query=%s", req.Type, req.Query),
-	}); err != nil {
-		o.logger.Warn("failed to write task.created audit event", "task_id", taskID, "err", err)
-	}
+	})
 
-	// Run the agent loop asynchronously.
 	go o.runTask(context.Background(), taskID)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -99,20 +79,14 @@ func (o *Orchestrator) handleSubmitTask(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(SubmitTaskResponse{TaskID: taskID})
 }
 
-// handleGetTask returns the current state of a task.
 func (o *Orchestrator) handleGetTask(w http.ResponseWriter, r *http.Request) {
-	ctx, span := tracer.Start(r.Context(), "orchestrator.get_task")
-	defer span.End()
-
 	taskID := r.PathValue("id")
 	if taskID == "" {
 		http.Error(w, "missing task id", http.StatusBadRequest)
 		return
 	}
 
-	span.SetAttributes(attribute.String("task.id", taskID))
-
-	state, err := o.store.Get(ctx, taskID)
+	state, err := o.store.Get(r.Context(), taskID)
 	if err != nil {
 		http.Error(w, "task not found", http.StatusNotFound)
 		return
@@ -122,9 +96,7 @@ func (o *Orchestrator) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(state)
 }
 
-// buildPlan returns the ordered list of steps for the given task type.
-// Step IDs are deterministic: "<task-id>-step-<n>".
-func buildPlan(taskType, taskID string) ([]taskstate.Step, error) {
+func buildPlan(taskType, taskID string, taskCtx map[string]string) ([]taskstate.Step, error) {
 	stepID := func(n int) string {
 		return fmt.Sprintf("%s-step-%d", taskID, n)
 	}
@@ -147,10 +119,59 @@ func buildPlan(taskType, taskID string) ([]taskstate.Step, error) {
 				Status:    taskstate.StepPending,
 			},
 		}, nil
+
+	case "fan-out-summarizer":
+		raw, ok := taskCtx["urls"]
+		if !ok || raw == "" {
+			return nil, fmt.Errorf("fan-out-summarizer requires a comma-separated 'urls' key in context")
+		}
+
+		var urls []string
+		for _, u := range strings.Split(raw, ",") {
+			u = strings.TrimSpace(u)
+			if u != "" {
+				urls = append(urls, u)
+			}
+		}
+		if len(urls) == 0 {
+			return nil, fmt.Errorf("fan-out-summarizer: no valid urls provided")
+		}
+
+		steps := make([]taskstate.Step, 0, len(urls)+1)
+		for i, u := range urls {
+			n := i + 1
+			steps = append(steps, taskstate.Step{
+				ID:           stepID(n),
+				AgentType:    "url-fetch",
+				InputKey:     stepID(n) + ".input",
+				OutputKey:    stepID(n) + ".output",
+				Status:       taskstate.StepPending,
+				Group:        "fetch",
+				AllowedHosts: extractDomain(u),
+				Params:       map[string]string{"url": u},
+			})
+		}
+
+		sumN := len(urls) + 1
+		steps = append(steps, taskstate.Step{
+			ID:        stepID(sumN),
+			AgentType: "summarizer",
+			InputKey:  stepID(sumN) + ".input",
+			OutputKey: stepID(sumN) + ".output",
+			Status:    taskstate.StepPending,
+		})
+
+		return steps, nil
+
 	default:
 		return nil, fmt.Errorf("unknown task type %q", taskType)
 	}
 }
 
-// traceSpan is a no-op fallback when OTel is not configured.
-var tracer trace.Tracer = trace.NewNoopTracerProvider().Tracer("orchestrator")
+func extractDomain(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	return u.Host
+}

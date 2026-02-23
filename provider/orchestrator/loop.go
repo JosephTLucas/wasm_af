@@ -3,31 +3,24 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
+	extism "github.com/extism/go-sdk"
 
 	"github.com/jolucas/wasm-af/pkg/taskstate"
 )
 
-// agentImageRef returns the OCI image reference for a given agent type.
-// Falls back to a local registry convention if no explicit ref is configured.
-func (o *Orchestrator) agentImageRef(agentType string) string {
-	if ref, ok := o.agentRefs[agentType]; ok {
-		return ref
-	}
-	return fmt.Sprintf("localhost:5000/agent-%s:latest", agentType)
+// wasmNameForAgent maps an agent type to the compiled .wasm filename (without extension).
+func wasmNameForAgent(agentType string) string {
+	return strings.ReplaceAll(agentType, "-", "_")
 }
 
 // runTask is the main agent loop for a task. It runs in its own goroutine.
-// Steps are executed in sequence; on any error the task is marked failed.
 func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
-	ctx, span := tracer.Start(ctx, "orchestrator.run_task")
-	defer span.End()
-	span.SetAttributes(attribute.String("task.id", taskID))
-
 	log := o.logger.With("task_id", taskID)
 
 	if err := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
@@ -45,16 +38,39 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 		return
 	}
 
-	for i := range state.Plan {
+	i := 0
+	for i < len(state.Plan) {
 		if state.Plan[i].Status != taskstate.StepPending {
+			i++
 			continue
 		}
-		if err := o.runStep(ctx, state, i); err != nil {
-			log.Error("step failed", "step_id", state.Plan[i].ID, "err", err)
-			o.failTask(ctx, taskID, fmt.Sprintf("step %s failed: %v", state.Plan[i].ID, err))
-			return
+
+		if group := state.Plan[i].Group; group != "" {
+			var indices []int
+			for j := i; j < len(state.Plan) && state.Plan[j].Group == group; j++ {
+				if state.Plan[j].Status == taskstate.StepPending {
+					indices = append(indices, j)
+				}
+			}
+
+			if err := o.runParallelSteps(ctx, state, indices); err != nil {
+				log.Error("parallel group failed", "group", group, "err", err)
+				o.failTask(ctx, taskID, fmt.Sprintf("parallel group %q failed: %v", group, err))
+				return
+			}
+
+			for i < len(state.Plan) && state.Plan[i].Group == group {
+				i++
+			}
+		} else {
+			if err := o.runStep(ctx, state, i); err != nil {
+				log.Error("step failed", "step_id", state.Plan[i].ID, "err", err)
+				o.failTask(ctx, taskID, fmt.Sprintf("step %s failed: %v", state.Plan[i].ID, err))
+				return
+			}
+			i++
 		}
-		// Re-read state so the next step sees accumulated results.
+
 		state, err = o.store.Get(ctx, taskID)
 		if err != nil {
 			log.Error("failed to reload state", "err", err)
@@ -68,35 +84,40 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 		return nil
 	}); err != nil {
 		log.Error("failed to mark task completed", "err", err)
-		span.RecordError(err)
 	}
 
 	_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 		TaskID:    taskID,
 		EventType: taskstate.EventTaskCompleted,
 	})
-	span.SetStatus(codes.Ok, "task completed")
 	log.Info("task completed")
 }
 
-// runStep executes a single plan step. It:
-//  1. Evaluates policy for the primary capability link.
-//  2. Starts the agent component on an available host.
-//  3. Creates the capability link (and optionally a direct peer link).
-//  4. Invokes the agent via wRPC.
-//  5. Stores the output and tears down links and component.
+// runParallelSteps executes a batch of plan steps concurrently.
+func (o *Orchestrator) runParallelSteps(ctx context.Context, state *taskstate.TaskState, indices []int) error {
+	errs := make([]error, len(indices))
+	var wg sync.WaitGroup
+
+	for slot, idx := range indices {
+		wg.Add(1)
+		go func(slot, idx int) {
+			defer wg.Done()
+			errs[slot] = o.runStep(ctx, state, idx)
+		}(slot, idx)
+	}
+
+	wg.Wait()
+	return errors.Join(errs...)
+}
+
+// runStep executes a single plan step:
+//  1. Evaluate policy.
+//  2. Create an Extism plugin with scoped capabilities.
+//  3. Call the agent's "execute" export.
+//  4. Destroy the plugin, store the output.
 func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, stepIdx int) error {
 	step := &state.Plan[stepIdx]
 	taskID := state.TaskID
-
-	ctx, span := tracer.Start(ctx, "orchestrator.run_step")
-	defer span.End()
-	span.SetAttributes(
-		attribute.String("task.id", taskID),
-		attribute.String("step.id", step.ID),
-		attribute.String("step.agent_type", step.AgentType),
-	)
-
 	log := o.logger.With("task_id", taskID, "step_id", step.ID, "agent_type", step.AgentType)
 	log.Info("starting step")
 
@@ -114,131 +135,67 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		TaskID: taskID, StepID: step.ID, EventType: taskstate.EventStepStarted,
 	})
 
-	componentID := fmt.Sprintf("%s-%s", taskID, step.AgentType)
-	imageRef := o.agentImageRef(step.AgentType)
+	// ── POLICY EVALUATION ────────────────────────────────────────────────────
+	policySource := "wasm-af:" + step.AgentType
 	cap := capabilityForAgent(step.AgentType)
 
-	// Hosts — pick first available.
-	hosts, err := o.ctl.GetHosts(ctx)
-	if err != nil || len(hosts) == 0 {
-		return fmt.Errorf("no hosts available: %w", err)
-	}
-	hostID := hosts[0].ID
-
-	// ── POLICY EVALUATION ────────────────────────────────────────────────────
-	// No link is created without a permit. Every decision is audited.
-	mode, err := o.EvaluateLink(ctx, taskID, step.ID, componentID, o.providerIDForCap(cap), cap)
+	result, err := o.evaluatePolicy(ctx, taskID, step.ID, policySource, "*", string(cap))
 	if err != nil {
+		return fmt.Errorf("policy evaluation failed: %w", err)
+	}
+
+	if !result.Permitted {
+		denyMsg := "denied"
+		if result.DenyMessage != nil {
+			denyMsg = *result.DenyMessage
+		}
 		_ = o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
 			s.Plan[stepIdx].Status = taskstate.StepDenied
-			s.Plan[stepIdx].Error = err.Error()
+			s.Plan[stepIdx].Error = denyMsg
 			return nil
 		})
 		_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
-			TaskID: taskID, StepID: step.ID, EventType: taskstate.EventStepFailed,
-			Message: err.Error(),
+			TaskID: taskID, StepID: step.ID, EventType: taskstate.EventPolicyDeny,
+			PolicySource: policySource, PolicyCapability: string(cap),
+			PolicyDenyMsg: denyMsg,
 		})
-		return fmt.Errorf("policy denied: %w", err)
+		return fmt.Errorf("policy denied: %s", denyMsg)
 	}
-	span.SetAttributes(attribute.String("policy.comms_mode", string(mode)))
 
-	// ── COMPONENT START ───────────────────────────────────────────────────────
 	_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
-		TaskID: taskID, StepID: step.ID, EventType: taskstate.EventComponentStart,
-		ComponentID: componentID, ComponentRef: imageRef,
+		TaskID: taskID, StepID: step.ID, EventType: taskstate.EventPolicyPermit,
+		PolicySource: policySource, PolicyCapability: string(cap),
 	})
-	if err := o.ctl.StartComponent(ctx, hostID, imageRef, componentID); err != nil {
-		return fmt.Errorf("start component %s: %w", componentID, err)
-	}
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := o.ctl.StopComponent(stopCtx, hostID, componentID); err != nil {
-			log.Warn("stop component failed", "component_id", componentID, "err", err)
-		}
-		_ = o.store.AppendAudit(stopCtx, &taskstate.AuditEvent{
-			TaskID: taskID, StepID: step.ID, EventType: taskstate.EventComponentStop,
-			ComponentID: componentID,
-		})
-	}()
 
-	// ── CAPABILITY LINK ───────────────────────────────────────────────────────
-	capLink := o.linkForStep(step.AgentType, componentID, o.providerIDForCap(cap), cap)
-	if err := o.ctl.PutLink(ctx, capLink); err != nil {
-		return fmt.Errorf("put capability link: %w", err)
-	}
-	_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
-		TaskID: taskID, StepID: step.ID, EventType: taskstate.EventLinkCreated,
-		ComponentID: componentID, ComponentRef: o.providerIDForCap(cap),
-	})
-	defer func() {
-		delCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = o.ctl.DeleteLink(delCtx, componentID, "default", capLink.WitNamespace, capLink.WitPackage)
-		_ = o.store.AppendAudit(delCtx, &taskstate.AuditEvent{
-			TaskID: taskID, StepID: step.ID, EventType: taskstate.EventLinkDeleted,
-		})
-	}()
-
-	// ── DIRECT PEER LINK (if policy granted direct comms) ────────────────────
-	// For the direct case, the orchestrator starts the peer and creates a wRPC
-	// link between the two components. The source agent calls the peer directly.
-	// The orchestrator tears both links and both components down when done.
-	if mode == CommsModeDirected && stepIdx+1 < len(state.Plan) {
-		nextStep := state.Plan[stepIdx+1]
-		nextComponentID := fmt.Sprintf("%s-%s", taskID, nextStep.AgentType)
-		nextImageRef := o.agentImageRef(nextStep.AgentType)
-
-		// Policy must explicitly permit the agent-direct link as well.
-		if _, err := o.EvaluateLink(ctx, taskID, step.ID, componentID, nextComponentID, CapAgentDirect); err != nil {
-			return fmt.Errorf("policy denied agent-direct link: %w", err)
-		}
-
-		nextCap := capabilityForAgent(nextStep.AgentType)
-		if _, err := o.EvaluateLink(ctx, taskID, nextStep.ID, nextComponentID, o.providerIDForCap(nextCap), nextCap); err != nil {
-			return fmt.Errorf("policy denied peer capability link: %w", err)
-		}
-
-		if err := o.ctl.StartComponent(ctx, hostID, nextImageRef, nextComponentID); err != nil {
-			return fmt.Errorf("start peer component: %w", err)
-		}
-		defer func() {
-			stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			_ = o.ctl.StopComponent(stopCtx, hostID, nextComponentID)
-		}()
-
-		// Peer's capability link (e.g. summarizer → LLM provider).
-		peerCapLink := o.linkForStep(nextStep.AgentType, nextComponentID, o.providerIDForCap(nextCap), nextCap)
-		if err := o.ctl.PutLink(ctx, peerCapLink); err != nil {
-			return fmt.Errorf("put peer capability link: %w", err)
-		}
-		defer func() {
-			delCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			_ = o.ctl.DeleteLink(delCtx, nextComponentID, "default", peerCapLink.WitNamespace, peerCapLink.WitPackage)
-		}()
-
-		// Agent-to-agent direct wRPC link.
-		peerLink := o.linkForStep(step.AgentType, componentID, nextComponentID, CapAgentDirect)
-		if err := o.ctl.PutLink(ctx, peerLink); err != nil {
-			return fmt.Errorf("put agent-direct link: %w", err)
-		}
-		defer func() {
-			delCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			_ = o.ctl.DeleteLink(delCtx, componentID, "default", peerLink.WitNamespace, peerLink.WitPackage)
-		}()
+	// ── BUILD ALLOWED HOSTS ──────────────────────────────────────────────────
+	var allowedHosts []string
+	if step.AllowedHosts != "" {
+		allowedHosts = []string{step.AllowedHosts}
 	}
 
-	// ── AGENT INVOCATION ──────────────────────────────────────────────────────
+	// ── BUILD HOST FUNCTIONS ─────────────────────────────────────────────────
+	var hostFunctions []extism.HostFunction
+	if step.AgentType == "summarizer" {
+		hostFunctions = o.llmHostFunctions()
+	}
+
+	// ── INVOKE AGENT ─────────────────────────────────────────────────────────
 	inputPayload := buildStepPayload(state, stepIdx)
 	inputContext := buildStepContext(state, stepIdx)
+
+	input := &TaskInput{
+		TaskID:  taskID,
+		StepID:  step.ID,
+		Payload: inputPayload,
+		Context: taskInputContext(inputContext),
+	}
+
 	if err := o.store.PutPayload(ctx, step.InputKey, inputPayload); err != nil {
 		return fmt.Errorf("write input payload: %w", err)
 	}
 
-	output, err := o.invokeAgent(ctx, componentID, taskID, step.ID, inputPayload, inputContext)
+	wasmName := wasmNameForAgent(step.AgentType)
+	output, err := o.invokeAgent(ctx, wasmName, input, allowedHosts, hostFunctions)
 	if err != nil {
 		_ = o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
 			s.Plan[stepIdx].Status = taskstate.StepFailed
@@ -252,7 +209,7 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		return fmt.Errorf("agent invocation: %w", err)
 	}
 
-	if err := o.store.PutPayload(ctx, step.OutputKey, output); err != nil {
+	if err := o.store.PutPayload(ctx, step.OutputKey, output.Payload); err != nil {
 		return fmt.Errorf("write output payload: %w", err)
 	}
 
@@ -260,7 +217,7 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 	if err := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
 		s.Plan[stepIdx].Status = taskstate.StepCompleted
 		s.Plan[stepIdx].CompletedAt = &fin
-		s.Results[step.OutputKey] = output
+		s.Results[step.OutputKey] = output.Payload
 		return nil
 	}); err != nil {
 		return fmt.Errorf("mark step completed: %w", err)
@@ -269,9 +226,21 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 	_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 		TaskID: taskID, StepID: step.ID, EventType: taskstate.EventStepCompleted,
 	})
-	span.SetStatus(codes.Ok, "step completed")
 	log.Info("step completed")
 	return nil
+}
+
+func taskInputContext(pairs []contextPair) []KVPair {
+	out := make([]KVPair, len(pairs))
+	for i, p := range pairs {
+		out[i] = KVPair{Key: p.Key, Val: p.Val}
+	}
+	return out
+}
+
+type contextPair struct {
+	Key string
+	Val string
 }
 
 // failTask marks a task as failed and writes a terminal audit event.
@@ -287,7 +256,6 @@ func (o *Orchestrator) failTask(ctx context.Context, taskID, reason string) {
 }
 
 // buildStepPayload returns the JSON payload string for a specific step.
-// Each agent type has its own expected payload shape.
 func buildStepPayload(state *taskstate.TaskState, stepIdx int) string {
 	step := &state.Plan[stepIdx]
 	switch step.AgentType {
@@ -297,6 +265,12 @@ func buildStepPayload(state *taskstate.TaskState, stepIdx int) string {
 			Count int    `json:"count"`
 		}
 		b, _ := json.Marshal(wsPayload{Query: state.Context["query"], Count: 5})
+		return string(b)
+	case "url-fetch":
+		type fetchPayload struct {
+			URL string `json:"url"`
+		}
+		b, _ := json.Marshal(fetchPayload{URL: step.Params["url"]})
 		return string(b)
 	case "summarizer":
 		type sumPayload struct {
@@ -314,26 +288,67 @@ func buildStepPayload(state *taskstate.TaskState, stepIdx int) string {
 	}
 }
 
-// buildStepContext assembles the kv-pair context slice for a step, carrying
-// prior step outputs under well-known keys the downstream agent can read.
-func buildStepContext(state *taskstate.TaskState, stepIdx int) []agentKVPair {
-	var ctx []agentKVPair
+// buildStepContext assembles context from prior step outputs.
+// When multiple prior steps share the same context key (parallel fan-out),
+// their results are merged into a single JSON value.
+func buildStepContext(state *taskstate.TaskState, stepIdx int) []contextPair {
+	type entry struct {
+		key    string
+		values []string
+	}
+
+	seen := make(map[string]int)
+	var entries []entry
+
 	for i := 0; i < stepIdx; i++ {
 		s := state.Plan[i]
-		if v, ok := state.Results[s.OutputKey]; ok {
-			// Map each prior agent output to the canonical context key
-			// the downstream agent is expected to read.
-			key := contextKeyForAgent(s.AgentType)
-			ctx = append(ctx, agentKVPair{Key: key, Val: v})
+		v, ok := state.Results[s.OutputKey]
+		if !ok {
+			continue
+		}
+		key := contextKeyForAgent(s.AgentType)
+		if idx, exists := seen[key]; exists {
+			entries[idx].values = append(entries[idx].values, v)
+		} else {
+			seen[key] = len(entries)
+			entries = append(entries, entry{key: key, values: []string{v}})
+		}
+	}
+
+	var ctx []contextPair
+	for _, e := range entries {
+		if len(e.values) == 1 {
+			ctx = append(ctx, contextPair{Key: e.key, Val: e.values[0]})
+		} else {
+			ctx = append(ctx, contextPair{Key: e.key, Val: mergeSearchOutputs(e.values)})
 		}
 	}
 	return ctx
 }
 
-// contextKeyForAgent returns the well-known context key for a given agent's output.
+func mergeSearchOutputs(outputs []string) string {
+	type searchOutput struct {
+		Query   string            `json:"query"`
+		Results []json.RawMessage `json:"results"`
+	}
+
+	var merged searchOutput
+	var queries []string
+	for _, raw := range outputs {
+		var so searchOutput
+		if err := json.Unmarshal([]byte(raw), &so); err == nil {
+			queries = append(queries, so.Query)
+			merged.Results = append(merged.Results, so.Results...)
+		}
+	}
+	merged.Query = strings.Join(queries, " | ")
+	b, _ := json.Marshal(merged)
+	return string(b)
+}
+
 func contextKeyForAgent(agentType string) string {
 	switch agentType {
-	case "web-search":
+	case "web-search", "url-fetch":
 		return "web_search_results"
 	case "summarizer":
 		return "summary_result"
@@ -342,10 +357,17 @@ func contextKeyForAgent(agentType string) string {
 	}
 }
 
-// capabilityForAgent returns the primary capability type for a given agent type.
+// PolicyCapability mirrors the policy engine's capability enum.
+type PolicyCapability string
+
+const (
+	CapHTTP PolicyCapability = "http"
+	CapLLM  PolicyCapability = "llm"
+)
+
 func capabilityForAgent(agentType string) PolicyCapability {
 	switch agentType {
-	case "web-search":
+	case "web-search", "url-fetch":
 		return CapHTTP
 	case "summarizer":
 		return CapLLM

@@ -36,7 +36,7 @@ const (
 // Step is one unit of work within a task plan.
 type Step struct {
 	ID          string     `json:"id"`
-	AgentType   string     `json:"agent_type"`   // e.g. "web-search", "summarizer"
+	AgentType   string     `json:"agent_type"`   // e.g. "web-search", "summarizer", "url-fetch"
 	InputKey    string     `json:"input_key"`    // KV key holding this step's input payload
 	OutputKey   string     `json:"output_key"`   // KV key where result will be written
 	Status      StepStatus `json:"status"`
@@ -44,6 +44,19 @@ type Step struct {
 	Error       string     `json:"error,omitempty"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
+
+	// Group tags steps for parallel execution. Steps with the same non-empty
+	// Group value that are contiguous in the plan are started concurrently.
+	Group string `json:"group,omitempty"`
+
+	// AllowedHosts overrides the orchestrator-level allowed_hosts for this
+	// step's HTTP capability link. Used to scope each parallel fetch instance
+	// to a single domain.
+	AllowedHosts string `json:"allowed_hosts,omitempty"`
+
+	// Params carries step-specific parameters that buildStepPayload reads.
+	// For url-fetch steps this contains {"url": "https://..."}.
+	Params map[string]string `json:"params,omitempty"`
 }
 
 // TaskState is the authoritative record for a running or completed task.

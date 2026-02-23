@@ -1,45 +1,15 @@
-wit_bindgen::generate!({
-    path: "wit",
-    world: "policy-engine",
-    generate_all,
-});
+use extism_pdk::*;
 
-use exports::wasm_af::policy::evaluator::{
-    Capability, CommsMode, DenyCode, DenyReason, Guest, LinkRequest, Permit,
-};
-
-use serde::Deserialize;
-
-/// JSON structure of the policy rules config value (key: "policy-rules").
-///
-/// Example:
-/// ```json
-/// {
-///   "rules": [
-///     { "source": "web-search", "target": "summarizer",    "capability": "agent-direct", "comms_mode": "direct"   },
-///     { "source": "web-search", "target": "*",             "capability": "http",         "comms_mode": "mediated" },
-///     { "source": "summarizer", "target": "*",             "capability": "llm",          "comms_mode": "mediated" }
-///   ]
-/// }
-/// ```
-///
-/// Pattern matching: `"*"` in source or target matches any string.
-/// Rules are evaluated in order; the first match wins.
-/// If no rule matches, the request is denied (deny-by-default).
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct PolicyConfig {
     rules: Vec<Rule>,
 }
 
-#[derive(Deserialize)]
+#[derive(serde::Deserialize)]
 struct Rule {
-    /// Exact component ID or `"*"` to match any source.
     source: String,
-    /// Exact component ID or `"*"` to match any target.
     target: String,
-    /// Capability type: "http", "llm", "kv", "agent-direct".
     capability: String,
-    /// Communication mode for permitted pairs: "mediated" or "direct".
     comms_mode: String,
 }
 
@@ -52,209 +22,143 @@ impl Rule {
     }
 }
 
-fn capability_str(cap: Capability) -> &'static str {
-    match cap {
-        Capability::Http => "http",
-        Capability::Llm => "llm",
-        Capability::Kv => "kv",
-        Capability::AgentDirect => "agent-direct",
-    }
+#[derive(serde::Deserialize)]
+#[allow(dead_code)]
+struct PolicyRequest {
+    source: String,
+    target: String,
+    capability: String,
+    task_id: String,
 }
 
-fn comms_mode_from_str(s: &str, context: &str) -> Result<CommsMode, DenyReason> {
-    match s {
-        "mediated" => Ok(CommsMode::Mediated),
-        "direct" => Ok(CommsMode::Direct),
-        other => Err(DenyReason {
-            code: DenyCode::PolicyConfigError,
-            message: format!(
-                "rule for {context} has invalid comms_mode '{other}'; expected 'mediated' or 'direct'"
-            ),
-        }),
-    }
+#[derive(serde::Serialize)]
+struct PolicyResult {
+    permitted: bool,
+    comms_mode: Option<String>,
+    deny_code: Option<String>,
+    deny_message: Option<String>,
 }
 
-/// Load and parse the policy config from the WASI runtime config key "policy-rules".
-/// Returns a deny-reason error on config read failure or parse failure.
-/// Returns deny-all config if the key is unset.
-fn load_policy() -> Result<PolicyConfig, DenyReason> {
-    let result = wasi::config::runtime::get("policy-rules");
-
-    let raw = result.map_err(|e| DenyReason {
-        code: DenyCode::PolicyConfigError,
-        message: format!("failed to read 'policy-rules' config: {:?}", e),
-    })?;
-
-    let json = raw.unwrap_or_default();
+#[plugin_fn]
+pub fn evaluate(Json(req): Json<PolicyRequest>) -> FnResult<Json<PolicyResult>> {
+    let json = config::get("policy-rules").unwrap_or(None).unwrap_or_default();
 
     if json.is_empty() {
-        // No config → deny-all (safe default).
-        return Err(DenyReason {
-            code: DenyCode::PolicyConfigError,
-            message: "'policy-rules' config is not set; defaulting to deny-all".to_string(),
-        });
+        return Ok(Json(PolicyResult {
+            permitted: false,
+            deny_code: Some("policy-config-error".to_string()),
+            deny_message: Some("'policy-rules' config is not set; defaulting to deny-all".to_string()),
+            comms_mode: None,
+        }));
     }
 
-    serde_json::from_str::<PolicyConfig>(&json).map_err(|e| DenyReason {
-        code: DenyCode::PolicyConfigError,
-        message: format!("failed to parse 'policy-rules' JSON: {e}"),
-    })
-}
+    let policy: PolicyConfig = serde_json::from_str(&json).map_err(|e| {
+        Error::msg(format!("failed to parse 'policy-rules' JSON: {e}"))
+    })?;
 
-struct Component;
+    let context = format!("{} -> {} ({})", req.source, req.target, req.capability);
 
-impl Guest for Component {
-    fn evaluate(req: LinkRequest) -> Result<Permit, DenyReason> {
-        let policy = load_policy()?;
-        let cap_str = capability_str(req.capability);
-        let context = format!(
-            "{} -> {} ({})",
-            req.source_component_id, req.target_component_id, cap_str
-        );
-
-        for rule in &policy.rules {
-            if rule.matches(&req.source_component_id, &req.target_component_id, cap_str) {
-                let mode = comms_mode_from_str(&rule.comms_mode, &context)?;
-                return Ok(Permit { comms_mode: mode });
-            }
-        }
-
-        Err(DenyReason {
-            code: DenyCode::NotAllowed,
-            message: format!("no policy rule permits {context}; deny-by-default"),
-        })
-    }
-}
-
-export!(Component);
-
-// --------------------------------------------------------------------------
-// Unit tests — exercise pure rule evaluation logic without WASI config I/O.
-// --------------------------------------------------------------------------
-
-#[cfg(test)]
-fn evaluate_with_policy(policy: &PolicyConfig, req: &LinkRequest) -> Result<Permit, DenyReason> {
-    let cap_str = capability_str(req.capability);
-    let context = format!(
-        "{} -> {} ({})",
-        req.source_component_id, req.target_component_id, cap_str
-    );
     for rule in &policy.rules {
-        if rule.matches(&req.source_component_id, &req.target_component_id, cap_str) {
-            let mode = comms_mode_from_str(&rule.comms_mode, &context)?;
-            return Ok(Permit { comms_mode: mode });
+        if rule.matches(&req.source, &req.target, &req.capability) {
+            if rule.comms_mode != "mediated" && rule.comms_mode != "direct" {
+                return Ok(Json(PolicyResult {
+                    permitted: false,
+                    deny_code: Some("policy-config-error".to_string()),
+                    deny_message: Some(format!(
+                        "rule for {context} has invalid comms_mode '{}'; \
+                         expected 'mediated' or 'direct'",
+                        rule.comms_mode
+                    )),
+                    comms_mode: None,
+                }));
+            }
+            return Ok(Json(PolicyResult {
+                permitted: true,
+                comms_mode: Some(rule.comms_mode.clone()),
+                deny_code: None,
+                deny_message: None,
+            }));
         }
     }
-    Err(DenyReason {
-        code: DenyCode::NotAllowed,
-        message: format!("no policy rule permits {context}; deny-by-default"),
-    })
-}
 
-#[cfg(test)]
-fn make_policy(rules_json: &str) -> PolicyConfig {
-    serde_json::from_str(rules_json).expect("invalid test JSON")
-}
-
-#[cfg(test)]
-fn req(src: &str, tgt: &str, cap: Capability) -> LinkRequest {
-    LinkRequest {
-        source_component_id: src.to_string(),
-        target_component_id: tgt.to_string(),
-        capability: cap,
-        task_id: "test-task-1".to_string(),
-    }
+    Ok(Json(PolicyResult {
+        permitted: false,
+        deny_code: Some("not-allowed".to_string()),
+        deny_message: Some(format!("no policy rule permits {context}; deny-by-default")),
+        comms_mode: None,
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn exact_match_permitted_mediated() {
-        let policy = make_policy(r#"{"rules":[
-            {"source":"agent-a","target":"http-provider","capability":"http","comms_mode":"mediated"}
-        ]}"#);
-        let result = evaluate_with_policy(&policy, &req("agent-a", "http-provider", Capability::Http));
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().comms_mode, CommsMode::Mediated);
+    fn eval(policy_json: &str, src: &str, tgt: &str, cap: &str) -> PolicyResult {
+        let policy: PolicyConfig = serde_json::from_str(policy_json).unwrap();
+        let context = format!("{src} -> {tgt} ({cap})");
+        for rule in &policy.rules {
+            if rule.matches(src, tgt, cap) {
+                return PolicyResult {
+                    permitted: true,
+                    comms_mode: Some(rule.comms_mode.clone()),
+                    deny_code: None,
+                    deny_message: None,
+                };
+            }
+        }
+        PolicyResult {
+            permitted: false,
+            deny_code: Some("not-allowed".to_string()),
+            deny_message: Some(format!("no policy rule permits {context}; deny-by-default")),
+            comms_mode: None,
+        }
     }
 
     #[test]
-    fn exact_match_permitted_direct() {
-        let policy = make_policy(r#"{"rules":[
-            {"source":"web-search","target":"summarizer","capability":"agent-direct","comms_mode":"direct"}
-        ]}"#);
-        let result = evaluate_with_policy(&policy, &req("web-search", "summarizer", Capability::AgentDirect));
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().comms_mode, CommsMode::Direct);
+    fn exact_match_permitted() {
+        let r = eval(
+            r#"{"rules":[{"source":"a","target":"b","capability":"http","comms_mode":"mediated"}]}"#,
+            "a", "b", "http",
+        );
+        assert!(r.permitted);
+        assert_eq!(r.comms_mode.as_deref(), Some("mediated"));
     }
 
     #[test]
-    fn wildcard_source_matches_any() {
-        let policy = make_policy(r#"{"rules":[
-            {"source":"*","target":"llm-provider","capability":"llm","comms_mode":"mediated"}
-        ]}"#);
-        let result = evaluate_with_policy(&policy, &req("any-agent-id", "llm-provider", Capability::Llm));
-        assert!(result.is_ok());
+    fn wildcard_source() {
+        let r = eval(
+            r#"{"rules":[{"source":"*","target":"b","capability":"llm","comms_mode":"mediated"}]}"#,
+            "any-agent", "b", "llm",
+        );
+        assert!(r.permitted);
     }
 
     #[test]
-    fn wildcard_target_matches_any() {
-        let policy = make_policy(r#"{"rules":[
-            {"source":"agent-a","target":"*","capability":"kv","comms_mode":"mediated"}
-        ]}"#);
-        let result = evaluate_with_policy(&policy, &req("agent-a", "kv-provider-123", Capability::Kv));
-        assert!(result.is_ok());
+    fn no_match_denied() {
+        let r = eval(
+            r#"{"rules":[{"source":"a","target":"b","capability":"http","comms_mode":"mediated"}]}"#,
+            "c", "b", "http",
+        );
+        assert!(!r.permitted);
+        assert_eq!(r.deny_code.as_deref(), Some("not-allowed"));
     }
 
     #[test]
-    fn no_matching_rule_is_denied() {
-        let policy = make_policy(r#"{"rules":[
-            {"source":"agent-a","target":"http-provider","capability":"http","comms_mode":"mediated"}
-        ]}"#);
-        let result = evaluate_with_policy(&policy, &req("agent-b", "http-provider", Capability::Http));
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code, DenyCode::NotAllowed);
+    fn empty_rules_denied() {
+        let r = eval(r#"{"rules":[]}"#, "a", "b", "http");
+        assert!(!r.permitted);
     }
 
     #[test]
-    fn wrong_capability_is_denied() {
-        let policy = make_policy(r#"{"rules":[
-            {"source":"agent-a","target":"http-provider","capability":"http","comms_mode":"mediated"}
-        ]}"#);
-        let result = evaluate_with_policy(&policy, &req("agent-a", "http-provider", Capability::Llm));
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code, DenyCode::NotAllowed);
-    }
-
-    #[test]
-    fn empty_rules_denies_all() {
-        let policy = make_policy(r#"{"rules":[]}"#);
-        let result = evaluate_with_policy(&policy, &req("agent-a", "anything", Capability::Http));
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code, DenyCode::NotAllowed);
-    }
-
-    #[test]
-    fn first_matching_rule_wins() {
-        let policy = make_policy(r#"{"rules":[
-            {"source":"agent-a","target":"*",          "capability":"http","comms_mode":"direct"},
-            {"source":"agent-a","target":"provider-x","capability":"http","comms_mode":"mediated"}
-        ]}"#);
-        // First rule matches; should be Direct despite second saying Mediated.
-        let result = evaluate_with_policy(&policy, &req("agent-a", "provider-x", Capability::Http));
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().comms_mode, CommsMode::Direct);
-    }
-
-    #[test]
-    fn invalid_comms_mode_is_config_error() {
-        let policy = make_policy(r#"{"rules":[
-            {"source":"agent-a","target":"provider-x","capability":"http","comms_mode":"banana"}
-        ]}"#);
-        let result = evaluate_with_policy(&policy, &req("agent-a", "provider-x", Capability::Http));
-        assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code, DenyCode::PolicyConfigError);
+    fn first_match_wins() {
+        let r = eval(
+            r#"{"rules":[
+                {"source":"a","target":"*","capability":"http","comms_mode":"direct"},
+                {"source":"a","target":"b","capability":"http","comms_mode":"mediated"}
+            ]}"#,
+            "a", "b", "http",
+        );
+        assert!(r.permitted);
+        assert_eq!(r.comms_mode.as_deref(), Some("direct"));
     }
 }

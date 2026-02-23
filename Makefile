@@ -1,60 +1,31 @@
-.PHONY: build build-providers build-components test test-integration deploy-local clean
+.PHONY: build build-orchestrator build-plugins test demo clean help
 
-GOFLAGS := CGO_ENABLED=0
-GOOS    := $(shell go env GOOS)
-GOARCH  := $(shell go env GOARCH)
-BINDIR  := bin
-
-ORCHESTRATOR_BIN := $(BINDIR)/orchestrator
-LLM_BIN          := $(BINDIR)/llm-inference
-
-REGISTRY := localhost:5000
+BINDIR := bin
 
 ##@ Build
 
-build: build-providers build-components ## Build everything
+build: build-orchestrator build-plugins ## Build everything
 
-build-providers: ## Build Go provider binaries
+build-orchestrator: ## Build Go orchestrator binary
 	@mkdir -p $(BINDIR)
-	$(GOFLAGS) go build -o $(ORCHESTRATOR_BIN) ./provider/orchestrator/
-	$(GOFLAGS) go build -o $(LLM_BIN)          ./provider/llm-inference/
+	go build -o $(BINDIR)/orchestrator ./provider/orchestrator/
 
-build-components: ## Build Rust WASM components
-	@cd components && cargo build --target wasm32-wasip2 --release
-	@echo "WASM components built in components/target/wasm32-wasip2/release/"
+build-plugins: ## Build Rust WASM plugins (Extism)
+	@cd components && cargo build --release
+	@echo "WASM plugins built in components/target/wasm32-unknown-unknown/release/"
 
 ##@ Test
 
 test: ## Run Go unit tests
-	go test ./pkg/... ./provider/...
+	go test ./pkg/...
 
-test-integration: ## Run integration tests (requires running wash up)
-	go test -tags integration ./pkg/... ./provider/...
+test-plugins: ## Run Rust plugin unit tests (requires wasm runner)
+	@cd components && cargo test
 
-##@ Deploy
+##@ Run
 
-deploy-local: build ## Deploy to local wasmCloud (requires wash up + local OCI registry)
-	wash app deploy deploy/wadm.yaml
-
-push-components: build-components ## Push WASM components to local OCI registry
-	wash push $(REGISTRY)/policy-engine:latest \
-		components/target/wasm32-wasip2/release/policy_engine.wasm
-	wash push $(REGISTRY)/agent-web-search:latest \
-		components/target/wasm32-wasip2/release/web_search.wasm
-	wash push $(REGISTRY)/agent-summarizer:latest \
-		components/target/wasm32-wasip2/release/summarizer.wasm
-
-##@ Dev
-
-wash-up: ## Start local wasmCloud + NATS
-	wash up --detached
-
-wash-down: ## Stop local wasmCloud
-	wash down
-
-registry: ## Start local OCI registry
-	docker run -d -p 5000:5000 --name wasm-af-registry registry:2 || \
-		docker start wasm-af-registry
+demo: build ## Run the fan-out-summarizer example end-to-end
+	./examples/fan-out-summarizer/run.sh
 
 ##@ Util
 

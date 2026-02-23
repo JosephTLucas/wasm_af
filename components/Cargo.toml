@@ -4,10 +4,11 @@ members = [
     "policy-engine",
     "agents/web-search",
     "agents/summarizer",
+    "agents/url-fetch",
 ]
 
 [profile.release]
-opt-level = "s"   # optimize for size — WASM binaries ship over the wire
+opt-level = "s"
 lto = true
 codegen-units = 1
 strip = true

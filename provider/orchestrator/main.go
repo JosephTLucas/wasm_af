@@ -1,7 +1,7 @@
-// Command orchestrator is the WASM_AF orchestrator capability provider.
-// It connects to the wasmCloud lattice, exposes an HTTP task submission API,
-// evaluates policy, manages agent component lifecycles, and drives the
-// plan → dispatch → collect → iterate agent loop.
+// Command orchestrator is the WASM_AF orchestrator.
+// It embeds the Extism WASM runtime to instantiate agent plugins on demand,
+// evaluates policy, manages the task lifecycle, and drives the
+// plan -> dispatch -> collect -> iterate agent loop.
 package main
 
 import (
@@ -11,18 +11,20 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	natsjetstream "github.com/nats-io/nats.go/jetstream"
-	wasmcloudprovider "go.wasmcloud.dev/provider"
 
-	"github.com/jolucas/wasm-af/pkg/controlplane"
+	nats "github.com/nats-io/nats.go"
+
 	"github.com/jolucas/wasm-af/pkg/taskstate"
 )
 
 const (
 	listenAddr     = ":8080"
-	defaultLattice = "default"
+	defaultNatsURL = "nats://127.0.0.1:4222"
 )
 
 func main() {
@@ -37,60 +39,51 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
-	// orch is built up incrementally as provider links are established.
-	orch := &Orchestrator{
-		logger:       logger,
-		agentRefs:    make(map[string]string),
-		allowedHosts: make(map[string]string),
+	wasmDir := envOr("WASM_DIR", "./components/target/wasm32-unknown-unknown/release")
+	natsURL := envOr("NATS_URL", defaultNatsURL)
+	policyRulesJSON := os.Getenv("POLICY_RULES")
+	if policyRulesJSON == "" {
+		if path := os.Getenv("POLICY_RULES_FILE"); path != "" {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("read policy rules file: %w", err)
+			}
+			policyRulesJSON = string(b)
+		}
 	}
+	llmMode := envOr("LLM_MODE", "mock")
+	llmBaseURL := envOr("LLM_BASE_URL", "")
+	llmAPIKey := envOr("LLM_API_KEY", "")
+	llmModel := envOr("LLM_MODEL", "gpt-4o-mini")
 
-	// Initialise the wasmCloud provider SDK.
-	// It reads host data from stdin, connects to the lattice NATS, and handles
-	// link lifecycle messages (link put/del → wires up provider/component references).
-	wasmProvider, err := wasmcloudprovider.New(
-		wasmcloudprovider.HealthCheck(func() string { return "orchestrator healthy" }),
-		wasmcloudprovider.TargetLinkPut(func(link wasmcloudprovider.InterfaceLinkDefinition) error {
-			orch.initFromLinkConfig(link)
-			return nil
-		}),
-		wasmcloudprovider.Shutdown(func() error {
-			logger.Info("shutdown requested by wasmCloud host")
-			return nil
-		}),
-	)
+	nc, err := nats.Connect(natsURL)
 	if err != nil {
-		return fmt.Errorf("init provider: %w", err)
+		return fmt.Errorf("nats connect: %w", err)
 	}
-
-	// Populate static config from the WADM-provided named config map.
-	orch.initFromHostConfig(wasmProvider.HostData().Config)
-
-	// Re-use the provider's NATS connection for JetStream and control plane calls.
-	nc := wasmProvider.NatsConnection()
-	orch.nats = nc
-
-	ctx := context.Background()
+	defer nc.Close()
 
 	js, err := natsjetstream.New(nc)
 	if err != nil {
 		return fmt.Errorf("jetstream: %w", err)
 	}
-	orch.js = js
 
+	ctx := context.Background()
 	store, err := taskstate.NewStore(ctx, js)
 	if err != nil {
 		return fmt.Errorf("task store: %w", err)
 	}
-	orch.store = store
 
-	lattice := wasmProvider.HostData().LatticeRPCPrefix
-	if lattice == "" {
-		lattice = defaultLattice
+	orch := &Orchestrator{
+		logger:          logger,
+		store:           store,
+		wasmDir:         wasmDir,
+		policyRulesJSON: policyRulesJSON,
+		llmMode:         llmMode,
+		llmBaseURL:      llmBaseURL,
+		llmAPIKey:       llmAPIKey,
+		llmModel:        llmModel,
 	}
-	orch.lattice = lattice
-	orch.ctl = controlplane.NewClient(nc, lattice)
 
-	// HTTP server runs in background; provider.Start() blocks below.
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", orch.handleSubmitTask)
 	mux.HandleFunc("GET /tasks/{id}", orch.handleGetTask)
@@ -102,9 +95,12 @@ func run(logger *slog.Logger) error {
 		Addr:         listenAddr,
 		Handler:      mux,
 		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: 120 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
 		logger.Info("HTTP server listening", "addr", listenAddr)
@@ -113,13 +109,17 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
-	// provider.Start() blocks until the lattice sends a shutdown signal.
-	if err := wasmProvider.Start(); err != nil {
-		return fmt.Errorf("provider: %w", err)
-	}
+	<-sigCh
+	logger.Info("shutdown requested")
 
-	// Graceful HTTP shutdown after the provider exits.
 	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutCtx)
+}
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }
