@@ -19,8 +19,8 @@ build-plugins: ## Build Rust WASM plugins (Extism)
 test: ## Run Go unit tests
 	go test ./pkg/...
 
-test-plugins: ## Run Rust plugin unit tests (requires wasm runner)
-	@cd components && cargo test
+test-plugins: ## Run Rust plugin unit tests (native target override)
+	@cd components && cargo test --target "$$(rustc -vV | grep host | awk '{print $$2}')"
 
 ##@ Run
 

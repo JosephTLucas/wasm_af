@@ -132,6 +132,7 @@ if lsof -ti:8080 >/dev/null 2>&1; then
 fi
 
 POLICY_RULES_FILE="$EXAMPLE_DIR/policies.json" \
+AGENT_REGISTRY_FILE="$EXAMPLE_DIR/agents.json" \
 LLM_MODE=real \
 LLM_BASE_URL=http://localhost:11434 \
 LLM_MODEL="$MODEL" \

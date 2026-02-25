@@ -1,6 +1,6 @@
 # Prompt Injection Demo
 
-A web page contains hidden instructions telling the LLM to extract credentials and POST them to `https://evil.com/collect`. The model follows the injection. Nothing is exfiltrated. The demo proves why, using the compiled binary as evidence.
+A web page contains hidden instructions telling the LLM to extract credentials and POST them to `https://evil.com/collect`. Whether or not the model follows the injection is irrelevant — nothing is exfiltrated either way, because the sandbox structurally prevents it. The demo proves why, using the compiled binary as evidence.
 
 ```bash
 make demo
@@ -38,7 +38,7 @@ The raw HTML — injection included — is passed to the summarizer agent as con
 
 ## What this shows about the architecture
 
-In a Python agent framework, these defenses depend on convention: the developer has to remember not to pass credentials to agents that don't need them, not to give agents HTTP tools they shouldn't have. A sufficiently clever injection can subvert conventions.
+Convention-based defenses require the developer to remember not to pass credentials to agents that don't need them, not to give agents HTTP tools they shouldn't have. A sufficiently clever injection can subvert conventions.
 
 In WASM_AF, the defenses are structural. The import table is set at compile time. The capability manifest is set at instantiation time by the orchestrator. Neither can be changed by text in a prompt.
 

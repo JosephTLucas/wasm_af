@@ -14,11 +14,6 @@ import (
 	"github.com/jolucas/wasm-af/pkg/taskstate"
 )
 
-// wasmNameForAgent maps an agent type to the compiled .wasm filename (without extension).
-func wasmNameForAgent(agentType string) string {
-	return strings.ReplaceAll(agentType, "-", "_")
-}
-
 // runTask is the main agent loop for a task. It runs in its own goroutine.
 func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 	log := o.logger.With("task_id", taskID)
@@ -86,10 +81,12 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 		log.Error("failed to mark task completed", "err", err)
 	}
 
-	_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+	if err := o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 		TaskID:    taskID,
 		EventType: taskstate.EventTaskCompleted,
-	})
+	}); err != nil {
+		log.Error("audit write failed", "event", taskstate.EventTaskCompleted, "err", err)
+	}
 	log.Info("task completed")
 }
 
@@ -131,15 +128,22 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		return fmt.Errorf("mark step running: %w", err)
 	}
 
-	_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+	if err := o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 		TaskID: taskID, StepID: step.ID, EventType: taskstate.EventStepStarted,
-	})
+	}); err != nil {
+		log.Error("audit write failed", "event", taskstate.EventStepStarted, "err", err)
+	}
+
+	// ── AGENT METADATA ───────────────────────────────────────────────────────
+	meta, err := o.registry.Get(step.AgentType)
+	if err != nil {
+		return fmt.Errorf("agent registry: %w", err)
+	}
 
 	// ── POLICY EVALUATION ────────────────────────────────────────────────────
 	policySource := "wasm-af:" + step.AgentType
-	cap := capabilityForAgent(step.AgentType)
 
-	result, err := o.evaluatePolicy(ctx, taskID, step.ID, policySource, "*", string(cap))
+	result, err := o.evaluatePolicy(ctx, taskID, step.ID, policySource, "*", meta.Capability)
 	if err != nil {
 		return fmt.Errorf("policy evaluation failed: %w", err)
 	}
@@ -149,23 +153,29 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		if result.DenyMessage != nil {
 			denyMsg = *result.DenyMessage
 		}
-		_ = o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
+		if err := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
 			s.Plan[stepIdx].Status = taskstate.StepDenied
 			s.Plan[stepIdx].Error = denyMsg
 			return nil
-		})
-		_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+		}); err != nil {
+			log.Error("failed to mark step denied", "err", err)
+		}
+		if err := o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 			TaskID: taskID, StepID: step.ID, EventType: taskstate.EventPolicyDeny,
-			PolicySource: policySource, PolicyCapability: string(cap),
+			PolicySource: policySource, PolicyCapability: meta.Capability,
 			PolicyDenyMsg: denyMsg,
-		})
+		}); err != nil {
+			log.Error("audit write failed", "event", taskstate.EventPolicyDeny, "err", err)
+		}
 		return fmt.Errorf("policy denied: %s", denyMsg)
 	}
 
-	_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+	if err := o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 		TaskID: taskID, StepID: step.ID, EventType: taskstate.EventPolicyPermit,
-		PolicySource: policySource, PolicyCapability: string(cap),
-	})
+		PolicySource: policySource, PolicyCapability: meta.Capability,
+	}); err != nil {
+		log.Error("audit write failed", "event", taskstate.EventPolicyPermit, "err", err)
+	}
 
 	// ── BUILD ALLOWED HOSTS ──────────────────────────────────────────────────
 	var allowedHosts []string
@@ -175,13 +185,13 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 
 	// ── BUILD HOST FUNCTIONS ─────────────────────────────────────────────────
 	var hostFunctions []extism.HostFunction
-	if step.AgentType == "summarizer" {
+	if meta.HasHostFunction("llm_complete") {
 		hostFunctions = o.llmHostFunctions()
 	}
 
 	// ── INVOKE AGENT ─────────────────────────────────────────────────────────
-	inputPayload := buildStepPayload(state, stepIdx)
-	inputContext := buildStepContext(state, stepIdx)
+	inputPayload := BuildPayload(meta, state, step)
+	inputContext := o.buildStepContext(state, stepIdx)
 
 	input := &TaskInput{
 		TaskID:  taskID,
@@ -194,18 +204,21 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		return fmt.Errorf("write input payload: %w", err)
 	}
 
-	wasmName := wasmNameForAgent(step.AgentType)
-	output, err := o.invokeAgent(ctx, wasmName, input, allowedHosts, hostFunctions)
+	output, err := o.invokeAgent(ctx, meta.WasmName, input, allowedHosts, hostFunctions)
 	if err != nil {
-		_ = o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
+		if updateErr := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
 			s.Plan[stepIdx].Status = taskstate.StepFailed
 			s.Plan[stepIdx].Error = err.Error()
 			return nil
-		})
-		_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+		}); updateErr != nil {
+			log.Error("failed to mark step failed", "err", updateErr)
+		}
+		if auditErr := o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 			TaskID: taskID, StepID: step.ID, EventType: taskstate.EventStepFailed,
 			Message: err.Error(),
-		})
+		}); auditErr != nil {
+			log.Error("audit write failed", "event", taskstate.EventStepFailed, "err", auditErr)
+		}
 		return fmt.Errorf("agent invocation: %w", err)
 	}
 
@@ -223,9 +236,11 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		return fmt.Errorf("mark step completed: %w", err)
 	}
 
-	_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+	if err := o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 		TaskID: taskID, StepID: step.ID, EventType: taskstate.EventStepCompleted,
-	})
+	}); err != nil {
+		log.Error("audit write failed", "event", taskstate.EventStepCompleted, "err", err)
+	}
 	log.Info("step completed")
 	return nil
 }
@@ -245,53 +260,24 @@ type contextPair struct {
 
 // failTask marks a task as failed and writes a terminal audit event.
 func (o *Orchestrator) failTask(ctx context.Context, taskID, reason string) {
-	_ = o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
+	if err := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
 		s.Status = taskstate.StatusFailed
 		s.Error = reason
 		return nil
-	})
-	_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+	}); err != nil {
+		o.logger.Error("failed to mark task failed", "task_id", taskID, "err", err)
+	}
+	if err := o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 		TaskID: taskID, EventType: taskstate.EventTaskFailed, Message: reason,
-	})
-}
-
-// buildStepPayload returns the JSON payload string for a specific step.
-func buildStepPayload(state *taskstate.TaskState, stepIdx int) string {
-	step := &state.Plan[stepIdx]
-	switch step.AgentType {
-	case "web-search":
-		type wsPayload struct {
-			Query string `json:"query"`
-			Count int    `json:"count"`
-		}
-		b, _ := json.Marshal(wsPayload{Query: state.Context["query"], Count: 5})
-		return string(b)
-	case "url-fetch":
-		type fetchPayload struct {
-			URL string `json:"url"`
-		}
-		b, _ := json.Marshal(fetchPayload{URL: step.Params["url"]})
-		return string(b)
-	case "summarizer":
-		type sumPayload struct {
-			Query string `json:"query,omitempty"`
-		}
-		b, _ := json.Marshal(sumPayload{Query: state.Context["query"]})
-		return string(b)
-	default:
-		type generic struct {
-			Query   string            `json:"query,omitempty"`
-			Context map[string]string `json:"context,omitempty"`
-		}
-		b, _ := json.Marshal(generic{Query: state.Context["query"], Context: state.Context})
-		return string(b)
+	}); err != nil {
+		o.logger.Error("audit write failed", "task_id", taskID, "event", taskstate.EventTaskFailed, "err", err)
 	}
 }
 
 // buildStepContext assembles context from prior step outputs.
 // When multiple prior steps share the same context key (parallel fan-out),
 // their results are merged into a single JSON value.
-func buildStepContext(state *taskstate.TaskState, stepIdx int) []contextPair {
+func (o *Orchestrator) buildStepContext(state *taskstate.TaskState, stepIdx int) []contextPair {
 	type entry struct {
 		key    string
 		values []string
@@ -306,7 +292,7 @@ func buildStepContext(state *taskstate.TaskState, stepIdx int) []contextPair {
 		if !ok {
 			continue
 		}
-		key := contextKeyForAgent(s.AgentType)
+		key := o.contextKeyForAgent(s.AgentType)
 		if idx, exists := seen[key]; exists {
 			entries[idx].values = append(entries[idx].values, v)
 		} else {
@@ -346,32 +332,10 @@ func mergeSearchOutputs(outputs []string) string {
 	return string(b)
 }
 
-func contextKeyForAgent(agentType string) string {
-	switch agentType {
-	case "web-search", "url-fetch":
-		return "web_search_results"
-	case "summarizer":
-		return "summary_result"
-	default:
+func (o *Orchestrator) contextKeyForAgent(agentType string) string {
+	meta, err := o.registry.Get(agentType)
+	if err != nil {
 		return agentType + "_result"
 	}
-}
-
-// PolicyCapability mirrors the policy engine's capability enum.
-type PolicyCapability string
-
-const (
-	CapHTTP PolicyCapability = "http"
-	CapLLM  PolicyCapability = "llm"
-)
-
-func capabilityForAgent(agentType string) PolicyCapability {
-	switch agentType {
-	case "web-search", "url-fetch":
-		return CapHTTP
-	case "summarizer":
-		return CapLLM
-	default:
-		return CapHTTP
-	}
+	return meta.ContextKey
 }

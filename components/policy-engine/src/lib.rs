@@ -10,7 +10,6 @@ struct Rule {
     source: String,
     target: String,
     capability: String,
-    comms_mode: String,
 }
 
 impl Rule {
@@ -34,7 +33,6 @@ struct PolicyRequest {
 #[derive(serde::Serialize)]
 struct PolicyResult {
     permitted: bool,
-    comms_mode: Option<String>,
     deny_code: Option<String>,
     deny_message: Option<String>,
 }
@@ -48,7 +46,6 @@ pub fn evaluate(Json(req): Json<PolicyRequest>) -> FnResult<Json<PolicyResult>> 
             permitted: false,
             deny_code: Some("policy-config-error".to_string()),
             deny_message: Some("'policy-rules' config is not set; defaulting to deny-all".to_string()),
-            comms_mode: None,
         }));
     }
 
@@ -60,21 +57,8 @@ pub fn evaluate(Json(req): Json<PolicyRequest>) -> FnResult<Json<PolicyResult>> 
 
     for rule in &policy.rules {
         if rule.matches(&req.source, &req.target, &req.capability) {
-            if rule.comms_mode != "mediated" && rule.comms_mode != "direct" {
-                return Ok(Json(PolicyResult {
-                    permitted: false,
-                    deny_code: Some("policy-config-error".to_string()),
-                    deny_message: Some(format!(
-                        "rule for {context} has invalid comms_mode '{}'; \
-                         expected 'mediated' or 'direct'",
-                        rule.comms_mode
-                    )),
-                    comms_mode: None,
-                }));
-            }
             return Ok(Json(PolicyResult {
                 permitted: true,
-                comms_mode: Some(rule.comms_mode.clone()),
                 deny_code: None,
                 deny_message: None,
             }));
@@ -85,7 +69,6 @@ pub fn evaluate(Json(req): Json<PolicyRequest>) -> FnResult<Json<PolicyResult>> 
         permitted: false,
         deny_code: Some("not-allowed".to_string()),
         deny_message: Some(format!("no policy rule permits {context}; deny-by-default")),
-        comms_mode: None,
     }))
 }
 
@@ -100,7 +83,6 @@ mod tests {
             if rule.matches(src, tgt, cap) {
                 return PolicyResult {
                     permitted: true,
-                    comms_mode: Some(rule.comms_mode.clone()),
                     deny_code: None,
                     deny_message: None,
                 };
@@ -110,24 +92,22 @@ mod tests {
             permitted: false,
             deny_code: Some("not-allowed".to_string()),
             deny_message: Some(format!("no policy rule permits {context}; deny-by-default")),
-            comms_mode: None,
         }
     }
 
     #[test]
     fn exact_match_permitted() {
         let r = eval(
-            r#"{"rules":[{"source":"a","target":"b","capability":"http","comms_mode":"mediated"}]}"#,
+            r#"{"rules":[{"source":"a","target":"b","capability":"http"}]}"#,
             "a", "b", "http",
         );
         assert!(r.permitted);
-        assert_eq!(r.comms_mode.as_deref(), Some("mediated"));
     }
 
     #[test]
     fn wildcard_source() {
         let r = eval(
-            r#"{"rules":[{"source":"*","target":"b","capability":"llm","comms_mode":"mediated"}]}"#,
+            r#"{"rules":[{"source":"*","target":"b","capability":"llm"}]}"#,
             "any-agent", "b", "llm",
         );
         assert!(r.permitted);
@@ -136,7 +116,7 @@ mod tests {
     #[test]
     fn no_match_denied() {
         let r = eval(
-            r#"{"rules":[{"source":"a","target":"b","capability":"http","comms_mode":"mediated"}]}"#,
+            r#"{"rules":[{"source":"a","target":"b","capability":"http"}]}"#,
             "c", "b", "http",
         );
         assert!(!r.permitted);
@@ -153,12 +133,11 @@ mod tests {
     fn first_match_wins() {
         let r = eval(
             r#"{"rules":[
-                {"source":"a","target":"*","capability":"http","comms_mode":"direct"},
-                {"source":"a","target":"b","capability":"http","comms_mode":"mediated"}
+                {"source":"a","target":"*","capability":"http"},
+                {"source":"a","target":"b","capability":"http"}
             ]}"#,
             "a", "b", "http",
         );
         assert!(r.permitted);
-        assert_eq!(r.comms_mode.as_deref(), Some("direct"));
     }
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -55,6 +56,32 @@ func run(logger *slog.Logger) error {
 	llmBaseURL := envOr("LLM_BASE_URL", "")
 	llmAPIKey := envOr("LLM_API_KEY", "")
 	llmModel := envOr("LLM_MODEL", "gpt-4o-mini")
+
+	pluginTimeoutSec := envOrInt("PLUGIN_TIMEOUT_SEC", 30)
+	pluginMaxMemPages := envOrInt("PLUGIN_MAX_MEMORY_PAGES", 256) // 256 pages = 16 MiB
+	pluginMaxHTTPBytes := envOrInt64("PLUGIN_MAX_HTTP_BYTES", 4<<20) // 4 MiB
+
+	agentRegistryJSON := os.Getenv("AGENT_REGISTRY")
+	if agentRegistryJSON == "" {
+		if path := os.Getenv("AGENT_REGISTRY_FILE"); path != "" {
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return fmt.Errorf("read agent registry file: %w", err)
+			}
+			agentRegistryJSON = string(b)
+		}
+	}
+	if agentRegistryJSON == "" {
+		return fmt.Errorf("AGENT_REGISTRY or AGENT_REGISTRY_FILE is required")
+	}
+	registry, err := ParseAgentRegistry([]byte(agentRegistryJSON))
+	if err != nil {
+		return fmt.Errorf("agent registry: %w", err)
+	}
+	logger.Info("loaded agent registry")
+
+	planBuilders := NewPlanBuilderRegistry()
+	RegisterDefaultBuilders(planBuilders)
 
 	// URL_FETCH_ALLOWED_DOMAINS seeds the NATS KV entry on first run.
 	// After that, the live value in KV is authoritative and can be updated
@@ -101,14 +128,19 @@ func run(logger *slog.Logger) error {
 	}
 
 	orch := &Orchestrator{
-		logger:          logger,
-		store:           store,
-		wasmDir:         wasmDir,
-		policyRulesJSON: policyRulesJSON,
-		llmMode:         llmMode,
-		llmBaseURL:      llmBaseURL,
-		llmAPIKey:       llmAPIKey,
-		llmModel:        llmModel,
+		logger:               logger,
+		store:                store,
+		wasmDir:              wasmDir,
+		policyRulesJSON:      policyRulesJSON,
+		registry:             registry,
+		builders:             planBuilders,
+		llmMode:              llmMode,
+		llmBaseURL:           llmBaseURL,
+		llmAPIKey:            llmAPIKey,
+		llmModel:             llmModel,
+		pluginTimeout:        time.Duration(pluginTimeoutSec) * time.Second,
+		pluginMaxMemoryPages: uint32(pluginMaxMemPages),
+		pluginMaxHTTPBytes:   pluginMaxHTTPBytes,
 	}
 
 	// Synchronously load the current allowlist before accepting requests.
@@ -187,6 +219,24 @@ func run(logger *slog.Logger) error {
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envOrInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func envOrInt64(key string, fallback int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

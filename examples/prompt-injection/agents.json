@@ -1,0 +1,23 @@
+{
+  "url-fetch": {
+    "wasm_name": "url_fetch",
+    "capability": "http",
+    "context_key": "web_search_results",
+    "host_functions": [],
+    "payload_fields": { "url": "step.params.url" }
+  },
+  "web-search": {
+    "wasm_name": "web_search",
+    "capability": "http",
+    "context_key": "web_search_results",
+    "host_functions": [],
+    "payload_fields": { "query": "task.context.query", "count": 5 }
+  },
+  "summarizer": {
+    "wasm_name": "summarizer",
+    "capability": "llm",
+    "context_key": "summary_result",
+    "host_functions": ["llm_complete"],
+    "payload_fields": { "query": "task.context.query" }
+  }
+}

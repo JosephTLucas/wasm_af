@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	extism "github.com/extism/go-sdk"
 
@@ -21,11 +22,22 @@ type Orchestrator struct {
 	store           *taskstate.Store
 	wasmDir         string // directory containing compiled .wasm plugins
 	policyRulesJSON string // JSON policy rules passed to the policy engine plugin
+	registry        *AgentRegistry
+	builders        *PlanBuilderRegistry
 
 	llmMode    string // "mock" or "real"
 	llmBaseURL string
 	llmAPIKey  string
 	llmModel   string
+
+	// pluginTimeout is the maximum wall-clock time a single plugin invocation
+	// may run before the context is cancelled and the WASM execution is aborted.
+	pluginTimeout time.Duration
+	// pluginMaxMemoryPages caps the linear memory a plugin instance may allocate.
+	// One page = 64 KiB. 0 means no limit (not recommended in production).
+	pluginMaxMemoryPages uint32
+	// pluginMaxHTTPBytes caps the size of any HTTP response a plugin may read.
+	pluginMaxHTTPBytes int64
 
 	// allowedFetchDomains is the server-side domain allowlist for url-fetch steps.
 	// Stored in NATS KV (wasm-af-config / allowed-fetch-domains) and kept in sync
@@ -91,7 +103,6 @@ type PolicyRequest struct {
 // PolicyResult is the JSON output from the policy engine plugin.
 type PolicyResult struct {
 	Permitted   bool    `json:"permitted"`
-	CommsMode   *string `json:"comms_mode"`
 	DenyCode    *string `json:"deny_code"`
 	DenyMessage *string `json:"deny_message"`
 }
@@ -117,11 +128,16 @@ func (o *Orchestrator) invokeAgent(
 		Wasm: []extism.Wasm{
 			extism.WasmFile{Path: o.wasmPath(wasmName)},
 		},
+		Memory: &extism.ManifestMemory{
+			MaxPages:             o.pluginMaxMemoryPages,
+			MaxHttpResponseBytes: o.pluginMaxHTTPBytes,
+		},
 	}
 	if len(allowedHosts) > 0 {
 		manifest.AllowedHosts = allowedHosts
 	}
 
+	// Extism PDK uses WASI for fd_write (logging) and clock_time_get.
 	config := extism.PluginConfig{
 		EnableWasi: true,
 	}
@@ -131,6 +147,10 @@ func (o *Orchestrator) invokeAgent(
 		return nil, fmt.Errorf("create plugin %s: %w", wasmName, err)
 	}
 	defer plugin.Close(ctx)
+
+	if o.pluginTimeout > 0 {
+		plugin.Timeout = o.pluginTimeout
+	}
 
 	inputJSON, err := json.Marshal(input)
 	if err != nil {

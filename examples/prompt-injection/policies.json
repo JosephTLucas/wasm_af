@@ -3,14 +3,12 @@
     {
       "source": "wasm-af:url-fetch",
       "target": "*",
-      "capability": "http",
-      "comms_mode": "mediated"
+      "capability": "http"
     },
     {
       "source": "wasm-af:summarizer",
       "target": "*",
-      "capability": "llm",
-      "comms_mode": "mediated"
+      "capability": "llm"
     }
   ]
 }

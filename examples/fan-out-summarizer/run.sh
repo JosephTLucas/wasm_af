@@ -96,6 +96,7 @@ if lsof -ti:8080 >/dev/null 2>&1; then
 fi
 
 POLICY_RULES_FILE="$ROOT/examples/fan-out-summarizer/policies.json" \
+AGENT_REGISTRY_FILE="$ROOT/examples/fan-out-summarizer/agents.json" \
 LLM_MODE=mock \
 WASM_DIR="$ROOT/components/target/wasm32-unknown-unknown/release" \
 URL_FETCH_ALLOWED_DOMAINS="webassembly.org,wasmcloud.com,bytecodealliance.org" \
@@ -237,10 +238,10 @@ echo "  The policy engine (policy_engine.wasm) evaluated one request per step:"
 echo ""
 echo "$STATE" | jq -r '
     .plan[] | select(.agent_type == "url-fetch") |
-    "    wasm-af:\(.agent_type)  →  http   →  PERMITTED (mediated)"'
+    "    wasm-af:\(.agent_type)  →  http   →  PERMITTED"'
 echo "$STATE" | jq -r '
     .plan[] | select(.agent_type == "summarizer") |
-    "    wasm-af:\(.agent_type)  →  llm    →  PERMITTED (mediated)"'
+    "    wasm-af:\(.agent_type)  →  llm    →  PERMITTED"'
 echo ""
 echo "  Policy is deny-by-default. Any capability not listed above is denied."
 echo "  The policy engine is itself a sandboxed WASM instance — its rules can't"

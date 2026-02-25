@@ -1,29 +1,5 @@
+use agent_types::{TaskInput, TaskOutput};
 use extism_pdk::*;
-
-#[derive(serde::Deserialize)]
-#[allow(dead_code)]
-struct TaskInput {
-    #[serde(default)]
-    task_id: String,
-    #[serde(default)]
-    step_id: String,
-    payload: String,
-    #[serde(default)]
-    context: Vec<KVPair>,
-}
-
-#[derive(serde::Deserialize, serde::Serialize)]
-struct KVPair {
-    key: String,
-    val: String,
-}
-
-#[derive(serde::Serialize)]
-struct TaskOutput {
-    payload: String,
-    #[serde(default)]
-    metadata: Vec<KVPair>,
-}
 
 #[derive(serde::Deserialize)]
 struct SummarizerInput {

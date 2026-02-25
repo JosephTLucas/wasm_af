@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,7 +42,7 @@ func (o *Orchestrator) handleSubmitTask(w http.ResponseWriter, r *http.Request) 
 		taskCtx[k] = v
 	}
 
-	plan, err := o.buildPlan(req.Type, taskID, taskCtx)
+	plan, err := o.builders.Build(req.Type, taskID, taskCtx, o.registry, o)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("unsupported task type: %s", req.Type), http.StatusUnprocessableEntity)
 		return
@@ -66,11 +64,13 @@ func (o *Orchestrator) handleSubmitTask(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+	if err := o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 		TaskID:    taskID,
 		EventType: taskstate.EventTaskCreated,
 		Message:   fmt.Sprintf("task created, type=%s query=%s", req.Type, req.Query),
-	})
+	}); err != nil {
+		o.logger.Error("audit write failed", "task_id", taskID, "event", taskstate.EventTaskCreated, "err", err)
+	}
 
 	go o.runTask(context.Background(), taskID)
 
@@ -96,125 +96,3 @@ func (o *Orchestrator) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(state)
 }
 
-func (o *Orchestrator) buildPlan(taskType, taskID string, taskCtx map[string]string) ([]taskstate.Step, error) {
-	stepID := func(n int) string {
-		return fmt.Sprintf("%s-step-%d", taskID, n)
-	}
-
-	switch taskType {
-	case "research":
-		return []taskstate.Step{
-			{
-				ID:        stepID(1),
-				AgentType: "web-search",
-				InputKey:  stepID(1) + ".input",
-				OutputKey: stepID(1) + ".output",
-				Status:    taskstate.StepPending,
-			},
-			{
-				ID:        stepID(2),
-				AgentType: "summarizer",
-				InputKey:  stepID(2) + ".input",
-				OutputKey: stepID(2) + ".output",
-				Status:    taskstate.StepPending,
-			},
-		}, nil
-
-	case "fan-out-summarizer":
-		raw, ok := taskCtx["urls"]
-		if !ok || raw == "" {
-			return nil, fmt.Errorf("fan-out-summarizer requires a comma-separated 'urls' key in context")
-		}
-
-		var urls []string
-		for _, u := range strings.Split(raw, ",") {
-			u = strings.TrimSpace(u)
-			if u != "" {
-				urls = append(urls, u)
-			}
-		}
-		if len(urls) == 0 {
-			return nil, fmt.Errorf("fan-out-summarizer: no valid urls provided")
-		}
-
-		steps := make([]taskstate.Step, 0, len(urls)+1)
-		for i, u := range urls {
-			n := i + 1
-			domain := extractDomain(u)
-			step := taskstate.Step{
-				ID:           stepID(n),
-				AgentType:    "url-fetch",
-				InputKey:     stepID(n) + ".input",
-				OutputKey:    stepID(n) + ".output",
-				Status:       taskstate.StepPending,
-				Group:        "fetch",
-				AllowedHosts: domain,
-				Params:       map[string]string{"url": u},
-			}
-			// Server-side enforcement: if an explicit allow list is configured,
-			// deny any URL whose domain is absent — before a plugin is instantiated.
-			// AllowedHosts comes from server config, never from user-submitted input.
-			if !o.fetchDomainAllowed(domain) {
-				step.Status = taskstate.StepDenied
-				step.AllowedHosts = ""
-				step.Error = fmt.Sprintf("domain %q is not in the server's URL fetch allow list", domain)
-			}
-			steps = append(steps, step)
-		}
-
-		sumN := len(urls) + 1
-		steps = append(steps, taskstate.Step{
-			ID:        stepID(sumN),
-			AgentType: "summarizer",
-			InputKey:  stepID(sumN) + ".input",
-			OutputKey: stepID(sumN) + ".output",
-			Status:    taskstate.StepPending,
-		})
-
-		return steps, nil
-
-	case "isolation-test":
-		// Creates a url-fetch step where AllowedHosts is set to one domain but
-		// the URL targets a different domain. Used by the demo to prove per-instance
-		// capability scoping: the plugin is instantiated but the cross-domain HTTP
-		// call is rejected by the Extism runtime, not by the pre-flight allow list.
-		//
-		// The fetch_url domain must be in the server-side allow list — if it isn't,
-		// the step would be denied at plan-build time, which demonstrates a different
-		// (and less interesting) layer of enforcement.
-		restrictedTo := taskCtx["restricted_to"]
-		fetchURL := taskCtx["fetch_url"]
-		if restrictedTo == "" || fetchURL == "" {
-			return nil, fmt.Errorf("isolation-test requires 'restricted_to' and 'fetch_url' in context")
-		}
-		fetchDomain := extractDomain(fetchURL)
-		step := taskstate.Step{
-			ID:           stepID(1),
-			AgentType:    "url-fetch",
-			InputKey:     stepID(1) + ".input",
-			OutputKey:    stepID(1) + ".output",
-			Status:       taskstate.StepPending,
-			AllowedHosts: restrictedTo,
-			Params:       map[string]string{"url": fetchURL},
-		}
-		if !o.fetchDomainAllowed(fetchDomain) {
-			step.Status = taskstate.StepDenied
-			step.Error = fmt.Sprintf("domain %q is not in the server's URL fetch allow list", fetchDomain)
-		}
-		return []taskstate.Step{step}, nil
-
-	default:
-		return nil, fmt.Errorf("unknown task type %q", taskType)
-	}
-}
-
-func extractDomain(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Host == "" {
-		return rawURL
-	}
-	// Hostname() strips the port; Host includes it for non-standard ports.
-	// We want the bare hostname so it matches Extism's allowed_hosts glob,
-	// which also operates on hostname only (not host:port).
-	return u.Hostname()
-}

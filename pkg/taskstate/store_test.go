@@ -117,8 +117,7 @@ func TestAudit(t *testing.T) {
 		EventType:        taskstate.EventPolicyPermit,
 		PolicySource:     "web-search",
 		PolicyTarget:     "summarizer",
-		PolicyCapability: "agent-direct",
-		PolicyCommsMode:  "direct",
+		PolicyCapability: "http",
 		Timestamp:        time.Now().UTC(),
 	}
 	if err := store.AppendAudit(ctx, event); err != nil {

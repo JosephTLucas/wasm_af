@@ -25,14 +25,6 @@ const (
 	StepDenied    StepStatus = "denied" // policy evaluation denied the link
 )
 
-// CommsMode mirrors the WIT policy permit comms-mode enum.
-type CommsMode string
-
-const (
-	CommsModeMediated CommsMode = "mediated"
-	CommsModeDirected CommsMode = "direct"
-)
-
 // Step is one unit of work within a task plan.
 type Step struct {
 	ID          string     `json:"id"`
@@ -40,7 +32,6 @@ type Step struct {
 	InputKey    string     `json:"input_key"`    // KV key holding this step's input payload
 	OutputKey   string     `json:"output_key"`   // KV key where result will be written
 	Status      StepStatus `json:"status"`
-	CommsMode   CommsMode  `json:"comms_mode,omitempty"`
 	Error       string     `json:"error,omitempty"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
@@ -86,7 +77,6 @@ type AuditEvent struct {
 	PolicySource     string `json:"policy_source,omitempty"`
 	PolicyTarget     string `json:"policy_target,omitempty"`
 	PolicyCapability string `json:"policy_capability,omitempty"`
-	PolicyCommsMode  string `json:"policy_comms_mode,omitempty"`
 	PolicyDenyCode   string `json:"policy_deny_code,omitempty"`
 	PolicyDenyMsg    string `json:"policy_deny_msg,omitempty"`
 
@@ -110,6 +100,4 @@ const (
 	EventPolicyDeny     EventType = "policy.deny"
 	EventComponentStart EventType = "component.start"
 	EventComponentStop  EventType = "component.stop"
-	EventLinkCreated    EventType = "link.created"
-	EventLinkDeleted    EventType = "link.deleted"
 )
