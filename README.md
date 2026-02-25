@@ -95,6 +95,18 @@ The agent's HTTP access is enforced by the Extism runtime, not application code.
 
 Each plugin instance gets its own Extism manifest. In the fan-out example, three url-fetch instances run in parallel — one scoped to `webassembly.org`, one to `wasmcloud.com`, one to `bytecodealliance.org`. Instance A literally cannot reach Instance B's domain. The runtime rejects the request before it leaves the sandbox.
 
+The allowlist contents are controlled server-side via NATS KV — never populated from the task request itself. A submitted URL whose domain is absent is denied before any plugin is instantiated. The allowlist is stored in NATS KV and watched live by the orchestrator — it can be updated without restarting:
+
+```bash
+# Restrict to specific domains
+nats kv put wasm-af-config allowed-fetch-domains "webassembly.org,wasmcloud.com,bytecodealliance.org"
+
+# Open/dev mode — no domain restrictions
+nats kv del wasm-af-config allowed-fetch-domains
+```
+
+`URL_FETCH_ALLOWED_DOMAINS` seeds the KV entry on first run if the key is absent. After that, the KV value is authoritative.
+
 ### 3. Zero-Trust Inter-Agent Communication
 
 Agents do not talk to each other. All inter-agent communication is mediated by the orchestrator.
@@ -168,8 +180,11 @@ go build -o ./bin/orchestrator ./provider/orchestrator/
 nats-server -js &
 
 # 3. Run orchestrator
+# URL_FETCH_ALLOWED_DOMAINS seeds NATS KV on first run; after that, update live with:
+#   nats kv put wasm-af-config allowed-fetch-domains "domain1,domain2"
 POLICY_RULES_FILE=./examples/fan-out-summarizer/policies.json \
 LLM_MODE=mock \
+URL_FETCH_ALLOWED_DOMAINS=webassembly.org,wasmcloud.com,bytecodealliance.org \
 ./bin/orchestrator &
 
 # 4. Submit task

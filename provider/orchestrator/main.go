@@ -56,6 +56,11 @@ func run(logger *slog.Logger) error {
 	llmAPIKey := envOr("LLM_API_KEY", "")
 	llmModel := envOr("LLM_MODEL", "gpt-4o-mini")
 
+	// URL_FETCH_ALLOWED_DOMAINS seeds the NATS KV entry on first run.
+	// After that, the live value in KV is authoritative and can be updated
+	// without restarting: nats kv put wasm-af-config allowed-fetch-domains "a.com,b.com"
+	seedDomains := os.Getenv("URL_FETCH_ALLOWED_DOMAINS")
+
 	nc, err := nats.Connect(natsURL)
 	if err != nil {
 		return fmt.Errorf("nats connect: %w", err)
@@ -67,10 +72,32 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("jetstream: %w", err)
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	store, err := taskstate.NewStore(ctx, js)
 	if err != nil {
 		return fmt.Errorf("task store: %w", err)
+	}
+
+	// Config KV bucket — holds runtime-mutable orchestrator configuration.
+	configKV, err := js.CreateOrUpdateKeyValue(ctx, natsjetstream.KeyValueConfig{
+		Bucket:      "wasm-af-config",
+		Description: "wasm-af orchestrator runtime configuration",
+	})
+	if err != nil {
+		return fmt.Errorf("config KV: %w", err)
+	}
+
+	// Seed allowed-fetch-domains from env var on first run (key absent in KV).
+	if seedDomains != "" {
+		if _, err := configKV.Get(ctx, "allowed-fetch-domains"); err != nil {
+			if _, putErr := configKV.Put(ctx, "allowed-fetch-domains", []byte(seedDomains)); putErr != nil {
+				logger.Warn("failed to seed allowed-fetch-domains in KV", "err", putErr)
+			} else {
+				logger.Info("seeded allowed-fetch-domains from env", "domains", seedDomains)
+			}
+		}
 	}
 
 	orch := &Orchestrator{
@@ -83,6 +110,45 @@ func run(logger *slog.Logger) error {
 		llmAPIKey:       llmAPIKey,
 		llmModel:        llmModel,
 	}
+
+	// Synchronously load the current allowlist before accepting requests.
+	if entry, err := configKV.Get(ctx, "allowed-fetch-domains"); err == nil {
+		orch.setAllowedFetchDomains(string(entry.Value()))
+		logger.Info("loaded allowed-fetch-domains from KV", "domains", string(entry.Value()))
+	}
+
+	// Watch for live updates — no restart needed to change the allowlist.
+	go func() {
+		watcher, err := configKV.Watch(ctx, "allowed-fetch-domains")
+		if err != nil {
+			logger.Error("failed to start allowed-fetch-domains watcher", "err", err)
+			return
+		}
+		defer watcher.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case update, ok := <-watcher.Updates():
+				if !ok {
+					return
+				}
+				if update == nil {
+					// Marker: initial values fully delivered; now in live-watch mode.
+					continue
+				}
+				switch update.Operation() {
+				case natsjetstream.KeyValueDelete, natsjetstream.KeyValuePurge:
+					orch.setAllowedFetchDomains("")
+					logger.Info("allowed-fetch-domains cleared — no domain restrictions")
+				default:
+					csv := string(update.Value())
+					orch.setAllowedFetchDomains(csv)
+					logger.Info("allowed-fetch-domains updated", "domains", csv)
+				}
+			}
+		}
+	}()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", orch.handleSubmitTask)
@@ -111,9 +177,10 @@ func run(logger *slog.Logger) error {
 
 	<-sigCh
 	logger.Info("shutdown requested")
+	cancel() // stop the KV watcher goroutine
 
-	shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutCancel()
 	return srv.Shutdown(shutCtx)
 }
 

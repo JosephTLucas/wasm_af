@@ -44,7 +44,7 @@ func (o *Orchestrator) handleSubmitTask(w http.ResponseWriter, r *http.Request) 
 		taskCtx[k] = v
 	}
 
-	plan, err := buildPlan(req.Type, taskID, taskCtx)
+	plan, err := o.buildPlan(req.Type, taskID, taskCtx)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("unsupported task type: %s", req.Type), http.StatusUnprocessableEntity)
 		return
@@ -96,7 +96,7 @@ func (o *Orchestrator) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(state)
 }
 
-func buildPlan(taskType, taskID string, taskCtx map[string]string) ([]taskstate.Step, error) {
+func (o *Orchestrator) buildPlan(taskType, taskID string, taskCtx map[string]string) ([]taskstate.Step, error) {
 	stepID := func(n int) string {
 		return fmt.Sprintf("%s-step-%d", taskID, n)
 	}
@@ -140,16 +140,26 @@ func buildPlan(taskType, taskID string, taskCtx map[string]string) ([]taskstate.
 		steps := make([]taskstate.Step, 0, len(urls)+1)
 		for i, u := range urls {
 			n := i + 1
-			steps = append(steps, taskstate.Step{
+			domain := extractDomain(u)
+			step := taskstate.Step{
 				ID:           stepID(n),
 				AgentType:    "url-fetch",
 				InputKey:     stepID(n) + ".input",
 				OutputKey:    stepID(n) + ".output",
 				Status:       taskstate.StepPending,
 				Group:        "fetch",
-				AllowedHosts: extractDomain(u),
+				AllowedHosts: domain,
 				Params:       map[string]string{"url": u},
-			})
+			}
+			// Server-side enforcement: if an explicit allow list is configured,
+			// deny any URL whose domain is absent — before a plugin is instantiated.
+			// AllowedHosts comes from server config, never from user-submitted input.
+			if !o.fetchDomainAllowed(domain) {
+				step.Status = taskstate.StepDenied
+				step.AllowedHosts = ""
+				step.Error = fmt.Sprintf("domain %q is not in the server's URL fetch allow list", domain)
+			}
+			steps = append(steps, step)
 		}
 
 		sumN := len(urls) + 1

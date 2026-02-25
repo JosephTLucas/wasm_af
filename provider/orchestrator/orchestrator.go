@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	extism "github.com/extism/go-sdk"
 
@@ -24,6 +26,39 @@ type Orchestrator struct {
 	llmBaseURL string
 	llmAPIKey  string
 	llmModel   string
+
+	// allowedFetchDomains is the server-side domain allowlist for url-fetch steps.
+	// Stored in NATS KV (wasm-af-config / allowed-fetch-domains) and kept in sync
+	// by a live watcher. When non-empty, any url-fetch step whose domain is absent
+	// is denied at plan-build time — before a plugin is instantiated. Empty means
+	// no restriction (dev/open mode). All access must go through fetchDomainAllowed.
+	allowedFetchMu      sync.RWMutex
+	allowedFetchDomains map[string]bool
+}
+
+// setAllowedFetchDomains replaces the in-memory allowlist from a
+// comma-separated string. Called at startup and on every KV update.
+func (o *Orchestrator) setAllowedFetchDomains(csv string) {
+	domains := map[string]bool{}
+	for _, d := range strings.Split(csv, ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			domains[d] = true
+		}
+	}
+	o.allowedFetchMu.Lock()
+	o.allowedFetchDomains = domains
+	o.allowedFetchMu.Unlock()
+}
+
+// fetchDomainAllowed reports whether domain is permitted for url-fetch steps.
+// Returns true when no allowlist is configured (open/dev mode).
+func (o *Orchestrator) fetchDomainAllowed(domain string) bool {
+	o.allowedFetchMu.RLock()
+	defer o.allowedFetchMu.RUnlock()
+	if len(o.allowedFetchDomains) == 0 {
+		return true
+	}
+	return o.allowedFetchDomains[domain]
 }
 
 // TaskInput is the JSON structure passed to every agent plugin.

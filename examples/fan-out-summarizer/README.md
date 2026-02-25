@@ -1,18 +1,10 @@
 # Fan-Out Summarizer
 
-Fetches N URLs **in parallel** — each in its own WASM sandbox with a
-per-instance network allow-list — then merges the results and produces
-an LLM-generated summary.
-
-## Quick start
+Fetches N URLs in parallel — each in its own WASM sandbox — then merges results and produces an LLM-generated summary. One command, end-to-end.
 
 ```bash
 ./examples/fan-out-summarizer/run.sh
 ```
-
-That's it. The script builds everything, starts NATS, runs the orchestrator,
-submits the task, and prints formatted results. Prerequisites: Rust, Go, jq,
-and either `nats-server` or `wash` (for its bundled NATS).
 
 Custom URLs:
 
@@ -20,57 +12,47 @@ Custom URLs:
 URLS="https://example.com,https://httpbin.org" ./examples/fan-out-summarizer/run.sh
 ```
 
+Prerequisites: Rust, Go 1.24+, jq, and either `nats-server` or `wash` (for its bundled NATS). The `nats` CLI ([natscli](https://github.com/nats-io/natscli)) is optional but required for the live allow-list demo section.
+
+---
+
 ## What it demonstrates
 
-**Dynamic instantiation** — The orchestrator creates N url-fetch plugin
-instances from a single .wasm binary, one per URL. The count is determined at
-task submission time.
+**Per-instance capability scoping.** Each url-fetch plugin gets its own Extism manifest with `allowed_hosts` set to exactly one domain. The runtime rejects HTTP requests to any other host before they leave the sandbox. Instance A physically cannot reach Instance B's domain.
 
-**Per-instance capability scoping** — Each url-fetch instance gets its own
-Extism manifest with `allowed_hosts` set to only the domain of its assigned
-URL. The Extism runtime rejects HTTP requests to unlisted hosts before they
-leave the sandbox. This is enforced by the runtime, not application code.
+**Policy gating.** The policy engine — itself a WASM plugin — evaluates every step before a plugin is instantiated. Deny-by-default: if there's no matching rule, the step doesn't run. The policy engine has no access to task data or credentials.
 
-**Parallel execution** — All fetch steps share a `group` tag. The orchestrator
-dispatches them concurrently via goroutines, each in an independent WASM
-sandbox.
+**Physical capability isolation.** The summarizer receives an `llm_complete` host function. The url-fetch plugins do not — the function doesn't exist in their WASM instances. The summarizer has no HTTP capability. These aren't advisory rules; they're what's in each plugin's manifest.
 
-**Ephemeral lifecycle** — Each plugin is created, invoked, and destroyed within
-a single Go function scope. There is no persistent agent process between steps.
-Memory (including any secrets) is reclaimed when the plugin closes.
+**Defense-in-depth network enforcement.** Two distinct layers, addressing different threat actors:
 
-**Policy gating** — The policy engine (itself a WASM plugin) evaluates
-deny-by-default rules before each step. url-fetch is permitted HTTP; the
-summarizer is permitted LLM. All other requests are denied.
+- **Server-side allowlist** (NATS KV → `buildPlan`): checked against the domains in the task request before any plugin is instantiated. Guards against the *task submitter* requesting a hostile domain. If the domain isn't listed, `runStep` is never called — zero WASM bytecode executes.
+- **Per-instance `allowed_hosts`** (Extism manifest): enforced by the wazero runtime when a plugin makes an HTTP call. Guards against *plugin code* (e.g. a prompt-injected agent) trying to reach a domain outside its assignment. The plugin runs, but the network call fails at the syscall layer.
 
-**Capability isolation** — The summarizer receives an `llm_complete` host
-function. The url-fetch plugin does not — the function literally doesn't exist
-in its WASM instance. Even if injected code tries to call it, the import is
-missing.
+Neither layer alone is sufficient: the allowlist doesn't constrain what plugin code does internally; `allowed_hosts` doesn't prevent a caller from submitting hostile URLs before the plugin starts. Live allowlist updates (no restart): `nats kv put wasm-af-config allowed-fetch-domains "domain1,domain2"`.
 
-**Orchestrator-mediated merge** — Fetch results flow through NATS KV, not
-direct plugin communication. The orchestrator merges N outputs into a single
-context entry for the summarizer.
+**Ephemeral lifecycle.** Each plugin is `NewPlugin → Call("execute") → Close` within a single goroutine scope. Between steps, there is no running process to attack, no memory to dump.
 
-## How it works
+---
+
+## Plan shape
 
 ```
 POST /tasks { type: "fan-out-summarizer", urls: "A,B,C" }
-  |
-  +-- buildPlan() --> 3 url-fetch steps (group:"fetch") + 1 summarizer step
-  |
-  +-- runParallelSteps()
-  |     +-- goroutine 0: policy --> create plugin(hosts:A) --> execute --> destroy
-  |     +-- goroutine 1: policy --> create plugin(hosts:B) --> execute --> destroy
-  |     +-- goroutine 2: policy --> create plugin(hosts:C) --> execute --> destroy
-  |
-  +-- mergeSearchOutputs() --> single web_search_results context entry
-  |
-  +-- runStep(summarizer): policy --> create plugin(+llm_complete host fn) --> execute --> destroy
+  │
+  ├── buildPlan()  →  [url-fetch(A), url-fetch(B), url-fetch(C)] + [summarizer]
+  │
+  ├── runParallelSteps()  (group: "fetch")
+  │     ├── goroutine: policy → NewPlugin(hosts:[A]) → Call → Close
+  │     ├── goroutine: policy → NewPlugin(hosts:[B]) → Call → Close
+  │     └── goroutine: policy → NewPlugin(hosts:[C]) → Call → Close
+  │
+  ├── merge outputs → single "web_search_results" context entry
+  │
+  └── runStep(summarizer): policy → NewPlugin(+llm_complete) → Call → Close
 ```
 
 ## Files
 
-- `policies.json` — deny-by-default policy rules (url-fetch -> HTTP, summarizer -> LLM)
+- `policies.json` — deny-by-default policy rules
 - `run.sh` — builds, starts, runs, and displays the demo
-- `README.md` — this file
