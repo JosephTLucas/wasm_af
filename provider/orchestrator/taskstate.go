@@ -213,5 +213,8 @@ func extractDomain(rawURL string) string {
 	if err != nil || u.Host == "" {
 		return rawURL
 	}
-	return u.Host
+	// Hostname() strips the port; Host includes it for non-standard ports.
+	// We want the bare hostname so it matches Extism's allowed_hosts glob,
+	// which also operates on hostname only (not host:port).
+	return u.Hostname()
 }
