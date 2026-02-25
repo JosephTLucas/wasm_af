@@ -174,6 +174,60 @@ echo "  The summarizer couldn't make HTTP requests: no HTTP capability in its ma
 echo "  These are not advisory rules. They are physical constraints of the WASM sandbox."
 echo ""
 
+# ── Cross-instance isolation proof ────────────────────────────────────────────
+echo "  ╔══════════════════════════════════════════════════════╗"
+echo "  ║        CROSS-INSTANCE ISOLATION                     ║"
+echo "  ╚══════════════════════════════════════════════════════╝"
+echo ""
+echo "  The claim: an instance scoped to webassembly.org cannot reach wasmcloud.com."
+echo "  Proof: create a url-fetch instance with allowed_hosts=[webassembly.org]"
+echo "  and ask it to fetch https://wasmcloud.com/."
+echo ""
+
+# Pick a domain for the cross-request that is in the server allow list
+# (so the pre-flight check passes and we prove the Extism layer, not the
+# server-side allowlist layer).
+FIRST_DOMAIN=$(echo "$STATE" | jq -r '.plan[] | select(.agent_type == "url-fetch") | .allowed_hosts' | head -1)
+SECOND_DOMAIN=$(echo "$STATE" | jq -r '.plan[] | select(.agent_type == "url-fetch") | .allowed_hosts' | sed -n '2p')
+
+if [ -z "$SECOND_DOMAIN" ]; then
+    echo "  (Only one url-fetch step in the plan — need at least two domains to demonstrate.)"
+    echo "  Run with URLS containing 2+ domains to see this section."
+else
+    PROBE_ID=$(curl -sf -X POST http://localhost:8080/tasks \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n \
+            --arg restricted_to "$FIRST_DOMAIN" \
+            --arg fetch_url "https://${SECOND_DOMAIN}/" \
+            '{type:"isolation-test", query:"cross-instance isolation probe",
+              context:{restricted_to:$restricted_to, fetch_url:$fetch_url}}')" \
+        | jq -r '.task_id')
+
+    if [ -z "$PROBE_ID" ] || [ "$PROBE_ID" = "null" ]; then
+        echo "  ERROR: task submission failed"
+    else
+        for _ in $(seq 1 15); do
+            PROBE_STATE=$(curl -sf "http://localhost:8080/tasks/${PROBE_ID}" || echo '{}')
+            PROBE_STATUS=$(echo "$PROBE_STATE" | jq -r '.status // "unknown"')
+            [ "$PROBE_STATUS" = "completed" ] || [ "$PROBE_STATUS" = "failed" ] && break
+            sleep 2
+        done
+        STEP_STATUS=$(echo "$PROBE_STATE" | jq -r '.plan[0].status // "unknown"')
+        STEP_ERR=$(echo "$PROBE_STATE" | jq -r '.plan[0].error // ""')
+        echo "    instance allowed_hosts: [$FIRST_DOMAIN]"
+        echo "    attempted fetch:        https://${SECOND_DOMAIN}/"
+        echo "    step result:            $STEP_STATUS"
+        [ -n "$STEP_ERR" ] && echo "    error:                  $(echo "$STEP_ERR" | head -c 120)"
+        echo ""
+        if [ "$STEP_STATUS" = "failed" ]; then
+            echo "  The plugin ran. The HTTP call was blocked by wazero — not by Go code."
+            echo "  $SECOND_DOMAIN is in the server allow list, so the pre-flight check passed."
+            echo "  The sandbox enforced the per-instance boundary."
+        fi
+    fi
+fi
+echo ""
+
 # ── Policy engine ──────────────────────────────────────────────────────────────
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║        POLICY ENGINE (itself a WASM plugin)         ║"

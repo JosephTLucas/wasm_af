@@ -173,6 +173,36 @@ func (o *Orchestrator) buildPlan(taskType, taskID string, taskCtx map[string]str
 
 		return steps, nil
 
+	case "isolation-test":
+		// Creates a url-fetch step where AllowedHosts is set to one domain but
+		// the URL targets a different domain. Used by the demo to prove per-instance
+		// capability scoping: the plugin is instantiated but the cross-domain HTTP
+		// call is rejected by the Extism runtime, not by the pre-flight allow list.
+		//
+		// The fetch_url domain must be in the server-side allow list — if it isn't,
+		// the step would be denied at plan-build time, which demonstrates a different
+		// (and less interesting) layer of enforcement.
+		restrictedTo := taskCtx["restricted_to"]
+		fetchURL := taskCtx["fetch_url"]
+		if restrictedTo == "" || fetchURL == "" {
+			return nil, fmt.Errorf("isolation-test requires 'restricted_to' and 'fetch_url' in context")
+		}
+		fetchDomain := extractDomain(fetchURL)
+		step := taskstate.Step{
+			ID:           stepID(1),
+			AgentType:    "url-fetch",
+			InputKey:     stepID(1) + ".input",
+			OutputKey:    stepID(1) + ".output",
+			Status:       taskstate.StepPending,
+			AllowedHosts: restrictedTo,
+			Params:       map[string]string{"url": fetchURL},
+		}
+		if !o.fetchDomainAllowed(fetchDomain) {
+			step.Status = taskstate.StepDenied
+			step.Error = fmt.Sprintf("domain %q is not in the server's URL fetch allow list", fetchDomain)
+		}
+		return []taskstate.Step{step}, nil
+
 	default:
 		return nil, fmt.Errorf("unknown task type %q", taskType)
 	}
