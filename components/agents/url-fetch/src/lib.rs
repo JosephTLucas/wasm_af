@@ -7,13 +7,13 @@ struct FetchRequest {
 }
 
 #[derive(serde::Serialize)]
-struct SearchOutput {
+struct FetchOutput {
     query: String,
-    results: Vec<SearchResult>,
+    results: Vec<FetchResult>,
 }
 
 #[derive(serde::Serialize)]
-struct SearchResult {
+struct FetchResult {
     title: String,
     url: String,
     snippet: String,
@@ -47,9 +47,9 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
     let title = extract_title(&body).unwrap_or_else(|| req.url.clone());
     let snippet = truncate_chars(&body, SNIPPET_CHARS);
 
-    let output = SearchOutput {
+    let output = FetchOutput {
         query: req.url.clone(),
-        results: vec![SearchResult {
+        results: vec![FetchResult {
             title,
             url: req.url,
             snippet,

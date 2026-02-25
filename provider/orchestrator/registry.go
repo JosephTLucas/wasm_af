@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/jolucas/wasm-af/pkg/taskstate"
 )
@@ -98,21 +99,17 @@ func BuildPayload(meta *AgentMeta, state *taskstate.TaskState, step *taskstate.S
 }
 
 func resolveFieldRef(ref string, state *taskstate.TaskState, step *taskstate.Step) any {
-	const stepParamsPrefix = "step.params."
-	const taskContextPrefix = "task.context."
-
-	switch {
-	case len(ref) > len(stepParamsPrefix) && ref[:len(stepParamsPrefix)] == stepParamsPrefix:
-		return step.Params[ref[len(stepParamsPrefix):]]
-	case len(ref) > len(taskContextPrefix) && ref[:len(taskContextPrefix)] == taskContextPrefix:
-		return state.Context[ref[len(taskContextPrefix):]]
-	default:
-		if n, err := strconv.ParseFloat(ref, 64); err == nil {
-			if n == float64(int(n)) {
-				return int(n)
-			}
-			return n
-		}
-		return ref
+	if key, ok := strings.CutPrefix(ref, "step.params."); ok {
+		return step.Params[key]
 	}
+	if key, ok := strings.CutPrefix(ref, "task.context."); ok {
+		return state.Context[key]
+	}
+	if n, err := strconv.ParseFloat(ref, 64); err == nil {
+		if n == float64(int(n)) {
+			return int(n)
+		}
+		return n
+	}
+	return ref
 }

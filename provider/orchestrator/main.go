@@ -134,6 +134,7 @@ func run(logger *slog.Logger) error {
 		policyRulesJSON:      policyRulesJSON,
 		registry:             registry,
 		builders:             planBuilders,
+		ctx:                  ctx,
 		llmMode:              llmMode,
 		llmBaseURL:           llmBaseURL,
 		llmAPIKey:            llmAPIKey,

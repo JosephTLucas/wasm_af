@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -25,6 +24,7 @@ type SubmitTaskResponse struct {
 }
 
 func (o *Orchestrator) handleSubmitTask(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
 	var req SubmitTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -72,7 +72,7 @@ func (o *Orchestrator) handleSubmitTask(w http.ResponseWriter, r *http.Request) 
 		o.logger.Error("audit write failed", "task_id", taskID, "event", taskstate.EventTaskCreated, "err", err)
 	}
 
-	go o.runTask(context.Background(), taskID)
+	go o.runTask(o.ctx, taskID)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)

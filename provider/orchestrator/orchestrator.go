@@ -25,6 +25,10 @@ type Orchestrator struct {
 	registry        *AgentRegistry
 	builders        *PlanBuilderRegistry
 
+	// ctx is the server-lifetime context, cancelled on SIGINT/SIGTERM.
+	// Task goroutines derive from this so in-flight work stops on shutdown.
+	ctx context.Context
+
 	llmMode    string // "mock" or "real"
 	llmBaseURL string
 	llmAPIKey  string
@@ -184,6 +188,9 @@ func (o *Orchestrator) evaluatePolicy(
 		},
 		Config: map[string]string{
 			"policy-rules": o.policyRulesJSON,
+		},
+		Memory: &extism.ManifestMemory{
+			MaxPages: o.pluginMaxMemoryPages,
 		},
 	}
 

@@ -53,7 +53,7 @@ func (o *Orchestrator) llmHostFunctions() []extism.HostFunction {
 			if o.llmMode == "mock" {
 				resp = mockLLM(req)
 			} else {
-				resp, err = realLLM(req, o.llmBaseURL, o.llmAPIKey, o.llmModel)
+				resp, err = realLLM(ctx, req, o.llmBaseURL, o.llmAPIKey, o.llmModel)
 				if err != nil {
 					o.logger.Error("llm_complete: upstream error", "err", err)
 					stack[0] = 0
@@ -92,7 +92,7 @@ func mockLLM(req llmRequest) llmResponse {
 	}
 }
 
-func realLLM(req llmRequest, baseURL, apiKey, defaultModel string) (llmResponse, error) {
+func realLLM(ctx context.Context, req llmRequest, baseURL, apiKey, defaultModel string) (llmResponse, error) {
 	model := req.Model
 	if model == "" {
 		model = defaultModel
@@ -110,7 +110,7 @@ func realLLM(req llmRequest, baseURL, apiKey, defaultModel string) (llmResponse,
 	})
 
 	url := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
-	httpReq, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
+	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
