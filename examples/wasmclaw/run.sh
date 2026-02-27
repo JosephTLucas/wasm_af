@@ -254,16 +254,6 @@ echo ""
 
 box "POLICY UNIT TESTS (opa test)"
 echo ""
-echo "  These tests prove security properties ${BLD}without${RST} a running system:"
-echo "    - Unknown agents are always denied"
-echo "    - Disabled capabilities (web_search_enabled: false) block access"
-echo "    - Shell allowlist blocks rm -rf, curl exfil, python3 exec"
-echo "    - File path checks block /etc/passwd, ~/.ssh, and prefix-escape attacks"
-echo "    - Router-splice can only propose skills in the allowed_skills list"
-echo "    - Email-read receives email_api_key; email-send does NOT (secret scoping)"
-echo "    - Email-reply jailbreak gate blocks responder when email has injection"
-echo "    - Submit gate accepts chat and email-reply task types"
-echo ""
 
 if command -v opa >/dev/null 2>&1; then
     OPA_EXIT=0
@@ -516,11 +506,7 @@ submit_json_and_poll() {
 # ══════════════════════════════════════════════════════════════════════════════
 box "SUBMISSION POLICY GATE"
 echo ""
-echo "  OPA evaluates ${BLD}wasm_af.submit${RST} before any plan is built."
-echo "  submit.rego allows only task_type=\"chat\"."
-echo ""
-
-echo "  → ${BLD}Submitting type='research'${RST} ${DIM}(should be blocked)${RST}..."
+echo "  → ${BLD}Submitting type='research'${RST} ${DIM}(not in allowed task types)${RST}..."
 DENY_BODY=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8080/tasks \
     -H "Content-Type: application/json" \
     -d '{"type":"research","query":"this should be rejected"}')
@@ -538,9 +524,6 @@ echo ""
 # ══════════════════════════════════════════════════════════════════════════════
 box "SKILL EXECUTION (LLM routes to agents)"
 echo ""
-echo "  The LLM router classifies each message and returns routing JSON."
-echo "  Plan: memory(get) → router → ${BLD}[skill splice]${RST} → responder → memory(append)"
-echo ""
 
 submit_and_poll "Shell agent (exec.Command, path-confined)" \
     "list files in /tmp/wasmclaw"
@@ -548,10 +531,7 @@ submit_and_poll "Shell agent (exec.Command, path-confined)" \
 echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 echo ""
 
-echo "  ${BLD}File-ops: write then read${RST} ${DIM}(WASI std::fs — no host functions)${RST}"
-echo "  Two separate tasks. Each creates a WASM instance with Wazero-enforced"
-echo "  AllowedPaths, calls execute(), and destroys it. The file persists on the"
-echo "  host — the WASM instances do not."
+echo "  ${BLD}File-ops: write then read${RST} ${DIM}(WASI std::fs, Wazero AllowedPaths)${RST}"
 echo ""
 
 submit_and_poll_quiet "File-ops write" \
@@ -582,19 +562,7 @@ submit_and_poll "Direct answer (no skill step — router returns direct-answer)"
     "what is the capital of France?"
 
 # ══════════════════════════════════════════════════════════════════════════════
-box "EMAIL AGENTS (secret isolation demo)"
-echo ""
-echo "  Two email agents with fundamentally different trust models:"
-echo ""
-echo "    ${BLD}email-send:${RST} Host function agent. SMTP credentials live in the Go"
-echo "                closure — they ${BLD}never${RST} enter WASM memory. The agent only"
-echo "                sees success/failure from the host. (Like shell.)"
-echo ""
-echo "    ${BLD}email-read:${RST} Sandboxed agent with OPA-injected email_api_key."
-echo "                Has ${BLD}zero${RST} host functions and ${BLD}zero${RST} network capability."
-echo "                Even though email content contains a prompt injection"
-echo "                trying to exfiltrate the API key, the agent structurally"
-echo "                cannot comply — no exec_command, no HTTP, no sockets."
+box "EMAIL AGENTS (secret isolation)"
 echo ""
 
 submit_and_poll "Email send (host fn — SMTP creds never in WASM)" \
@@ -606,30 +574,11 @@ echo ""
 submit_and_poll "Email read (OPA-injected API key, sandboxed, contains prompt injection)" \
     "check my email inbox"
 
-echo "  The third email in the inbox contained a prompt injection attempting to:"
-echo "    ${RED}1.${RST} Retrieve email_api_key from plugin config"
-echo "    ${RED}2.${RST} Execute curl to exfiltrate the key to attacker"
-echo "    ${RED}3.${RST} Include secrets in the LLM response"
-echo ""
-echo "  Why this fails — three layers of isolation:"
-echo "    ${GRN}①${RST} email-read has no exec_command import ${DIM}(binary proof — see below)${RST}"
-echo "    ${GRN}②${RST} email-read has no HTTP capability ${DIM}(no allowed_hosts, no imports)${RST}"
-echo "    ${GRN}③${RST} The responder agent (separate WASM instance) has ${BLD}no${RST} email_api_key"
-echo "      in its config — secrets are scoped per-agent by OPA policy"
-echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
 box "EMAIL REPLY PIPELINE (jailbreak detection)"
 echo ""
-echo "  A composed email-reply workflow submitted as a ${BLD}single task${RST}."
-echo "  Plan: email-read → responder → email-send"
-echo ""
-echo "  The jailbreak check is ${BLD}not${RST} a separate step — it is the OPA policy"
-echo "  evaluation that fires before the responder. The policy inspects the"
-echo "  email-read output (via prior_results) and denies the responder if"
-echo "  the target email contains injection patterns."
-echo ""
-echo "    ${BLD}Pipeline:${RST}  email-read → ${RED}OPA gate${RST} → responder → email-send"
+echo "  Pipeline: email-read → ${RED}OPA jailbreak gate${RST} → responder → email-send"
 echo ""
 
 # The mock inbox (hardcoded in email-read WASM agent) has 3 emails:
@@ -649,17 +598,9 @@ echo ""
 submit_json_and_poll "Scenario B: Reply to injected email (prompt injection blocked)" \
     '{"type":"email-reply","query":"reply to account verification email","context":{"message":"reply to account verification email","reply_to_index":"2","reply_to":"support@legit-saas.com","reply_subject":"Re: Action Required","reply_body":"Thanks, what do I need to do?"}}'
 
-echo "  Scenario B: the third email in the inbox contained a prompt injection."
-echo "  OPA inspected the email-read output before the responder step ran."
-echo "  The responder was ${RED}denied${RST} — the LLM never saw the injected content,"
-echo "  and no reply was drafted or sent."
-echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
 box "STEP-LEVEL SECURITY (OPA denies at runtime)"
-echo ""
-echo "  These are ${BLD}not${RST} static tests — they run the full pipeline and show"
-echo "  OPA denying individual plan steps at execution time."
 echo ""
 
 submit_and_show "Shell path deny: cat /etc/passwd (path outside allowed_paths)" \
@@ -679,9 +620,6 @@ submit_and_show "File-ops path escape: write to /etc/shadow (outside AllowedPath
 
 # ══════════════════════════════════════════════════════════════════════════════
 box "BINARY CAPABILITY ANALYSIS"
-echo ""
-echo "  A compiled WASM binary's imports are immutable — a prompt cannot"
-echo "  add capabilities that weren't compiled in."
 echo ""
 
 WASM_TOOLS=""
@@ -711,25 +649,19 @@ if [ -n "$WASM_TOOLS" ]; then
     $WASM_TOOLS print "$SANDBOX_WASM" 2>/dev/null \
         | grep 'extism:host/user' | sed 's/^/    /' || \
         echo "    (wasm-tools print failed)"
-    echo "    sandbox_exec calls back to host → host runs code in a ${BLD}new${RST} Wazero instance."
-    echo "    The code never touches the host OS."
     echo ""
 
     echo "  ${BLD}email_send.wasm${RST} — extism:host/user imports:"
     $WASM_TOOLS print "$EMAIL_SEND_WASM" 2>/dev/null \
         | grep 'extism:host/user' | sed 's/^/    /' || \
         echo "    (wasm-tools print failed)"
-    echo "    send_email calls the host → host delivers via SMTP ${DIM}(credentials in closure)${RST}."
-    echo "    The WASM agent never sees SMTP username, password, or server details."
     echo ""
 
     echo "  ${BLD}email_read.wasm${RST} — extism:host/user imports:"
     EMAIL_READ_IMPORTS=$($WASM_TOOLS print "$EMAIL_READ_WASM" 2>/dev/null \
         | grep 'extism:host/user' || true)
     if [ -z "$EMAIL_READ_IMPORTS" ]; then
-        echo "    ${GRN}(none)${RST} — reads config only. No host functions, no HTTP, no sockets."
-        echo "    Even with email_api_key in config, this agent ${BLD}structurally cannot${RST}"
-        echo "    exfiltrate it. A prompt injection in email content is harmless."
+        echo "    ${GRN}(none)${RST}"
     else
         echo "$EMAIL_READ_IMPORTS" | sed 's/^/    /'
     fi

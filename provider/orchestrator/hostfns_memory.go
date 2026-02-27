@@ -32,9 +32,27 @@ type kvPutResponse struct {
 }
 
 // NewMemoryHostFnProviders returns two HostFnProviders — one for kv_get and one
-// for kv_put — backed by a NATS JetStream KV bucket "wasm-af-memory". Register
-// each under its own name in the HostFnRegistry.
+// for kv_put — backed by a NATS JetStream KV bucket "wasm-af-memory". The
+// bucket handle is created once and captured in the closures. Register each
+// provider under its own name in the HostFnRegistry.
 func NewMemoryHostFnProviders(nc *nats.Conn, logger *slog.Logger) (getProvider, putProvider HostFnProvider) {
+	kv, err := initMemoryBucket(context.Background(), nc)
+	if err != nil {
+		logger.Error("memory host fns: failed to init bucket (will retry per-call)", "err", err)
+	}
+
+	resolveKV := func(ctx context.Context) (natsjetstream.KeyValue, error) {
+		if kv != nil {
+			return kv, nil
+		}
+		bucket, err := initMemoryBucket(ctx, nc)
+		if err != nil {
+			return nil, err
+		}
+		kv = bucket
+		return kv, nil
+	}
+
 	getProvider = func(_ *Orchestrator) []extism.HostFunction {
 		fn := extism.NewHostFunctionWithStack(
 			"kv_get",
@@ -53,7 +71,7 @@ func NewMemoryHostFnProviders(nc *nats.Conn, logger *slog.Logger) (getProvider, 
 					return
 				}
 
-				resp := doKvGet(ctx, nc, req.Key, logger)
+				resp := doKvGet(ctx, resolveKV, req.Key, logger)
 				outputBytes, _ := json.Marshal(resp)
 				offset, err := p.WriteBytes(outputBytes)
 				if err != nil {
@@ -88,7 +106,7 @@ func NewMemoryHostFnProviders(nc *nats.Conn, logger *slog.Logger) (getProvider, 
 					return
 				}
 
-				resp := doKvPut(ctx, nc, req.Key, req.Value, logger)
+				resp := doKvPut(ctx, resolveKV, req.Key, req.Value, logger)
 				outputBytes, _ := json.Marshal(resp)
 				offset, err := p.WriteBytes(outputBytes)
 				if err != nil {
@@ -108,7 +126,7 @@ func NewMemoryHostFnProviders(nc *nats.Conn, logger *slog.Logger) (getProvider, 
 	return getProvider, putProvider
 }
 
-func memoryBucket(ctx context.Context, nc *nats.Conn) (natsjetstream.KeyValue, error) {
+func initMemoryBucket(ctx context.Context, nc *nats.Conn) (natsjetstream.KeyValue, error) {
 	js, err := natsjetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("jetstream: %w", err)
@@ -119,13 +137,15 @@ func memoryBucket(ctx context.Context, nc *nats.Conn) (natsjetstream.KeyValue, e
 	})
 }
 
-func doKvGet(ctx context.Context, nc *nats.Conn, key string, logger *slog.Logger) kvGetResponse {
-	kv, err := memoryBucket(ctx, nc)
+type kvResolver func(ctx context.Context) (natsjetstream.KeyValue, error)
+
+func doKvGet(ctx context.Context, resolve kvResolver, key string, logger *slog.Logger) kvGetResponse {
+	bucket, err := resolve(ctx)
 	if err != nil {
 		logger.Error("kv_get: bucket", "err", err)
 		return kvGetResponse{}
 	}
-	entry, err := kv.Get(ctx, key)
+	entry, err := bucket.Get(ctx, key)
 	if err != nil {
 		if errors.Is(err, natsjetstream.ErrKeyNotFound) {
 			return kvGetResponse{Found: false}
@@ -136,13 +156,13 @@ func doKvGet(ctx context.Context, nc *nats.Conn, key string, logger *slog.Logger
 	return kvGetResponse{Value: string(entry.Value()), Found: true}
 }
 
-func doKvPut(ctx context.Context, nc *nats.Conn, key, value string, logger *slog.Logger) kvPutResponse {
-	kv, err := memoryBucket(ctx, nc)
+func doKvPut(ctx context.Context, resolve kvResolver, key, value string, logger *slog.Logger) kvPutResponse {
+	bucket, err := resolve(ctx)
 	if err != nil {
 		logger.Error("kv_put: bucket", "err", err)
 		return kvPutResponse{}
 	}
-	if _, err := kv.Put(ctx, key, []byte(value)); err != nil {
+	if _, err := bucket.Put(ctx, key, []byte(value)); err != nil {
 		logger.Error("kv_put: put", "key", key, "err", err)
 		return kvPutResponse{}
 	}

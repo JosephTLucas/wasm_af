@@ -218,8 +218,7 @@ echo "  ╔═══════════════════════
 echo "  ║        LLM RESPONSE                                 ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo ""
-echo "  The injected text reached the LLM inside the summarizer's prompt."
-echo "  Here is what the model produced:"
+echo "  The model's output:"
 echo ""
 
 SUM_KEY=$(echo "$STATE" | jq -r '.plan[] | select(.agent_type == "summarizer") | .output_key')
@@ -266,21 +265,12 @@ if [ -n "$WASM_TOOLS" ]; then
     if $WASM_TOOLS print "$SUMMARIZER_WASM" 2>/dev/null | grep -q 'http_request'; then
         echo "     WARNING: http_request found in summarizer — unexpected."
     else
-        echo "     http_request: NOT PRESENT."
-        echo "     A prompt cannot add an import to a compiled binary."
-        echo "     The LLM cannot call a function that does not exist in its module."
+        echo "     ${GRN}http_request: NOT PRESENT.${RST}"
     fi
     echo ""
     echo "     url_fetch.wasm imports (for comparison):"
     $WASM_TOOLS print "$URLFETCH_WASM" 2>/dev/null \
         | grep '(import' | sed 's/^[[:space:]]*/       /'
-    echo ""
-    if $WASM_TOOLS print "$URLFETCH_WASM" 2>/dev/null | grep -q 'http_request'; then
-        echo "     http_request: PRESENT in url_fetch (as expected)."
-    fi
-    if ! $WASM_TOOLS print "$URLFETCH_WASM" 2>/dev/null | grep -q 'llm_complete'; then
-        echo "     llm_complete: NOT PRESENT in url_fetch (as expected)."
-    fi
 else
     echo "     (wasm-tools not found — install via: cargo install wasm-tools)"
     echo "     The imports can be inspected manually:"
@@ -289,25 +279,17 @@ fi
 echo ""
 
 # 2. No credentials were in the sandbox
-echo "  2. The LLM API key was never in the WASM sandbox."
+echo "  2. Credentials never entered the sandbox."
 echo ""
-echo "     The Ollama endpoint is unauthenticated, so there is no API key at all."
-echo "     If there were one, it would live in a Go closure inside llm.go:"
-echo "       realLLM(ctx, req, baseURL, apiKey, model)"
-echo "     These are closure-captured variables — not Orchestrator struct fields."
-echo "     Passed as Go strings to the HTTP client, never serialized into the"
-echo "     TaskInput struct, never written to WASM memory."
-echo "     The summarizer's full input was: the fetched HTML + the query string."
-echo "     There were no credentials to find."
+echo "     API key lives in a Go closure (llm.go) — never serialized into TaskInput"
+echo "     or written to WASM memory. The summarizer's input was: fetched HTML + query."
 echo ""
 
 # 3. No agent-to-agent channel
-echo "  3. The summarizer cannot instruct url-fetch to make new requests."
+echo "  3. No agent-to-agent communication channel."
 echo ""
-echo "     Agents do not talk to each other. The orchestrator is the only"
-echo "     communication channel. The summarizer's only output is its payload"
-echo "     written to NATS KV, read back by the orchestrator after the plugin"
-echo "     is destroyed. There is no mechanism to trigger further HTTP calls."
+echo "     The summarizer's only output is a JSON payload stored after the plugin"
+echo "     is destroyed. It cannot trigger further HTTP calls."
 echo ""
 
 echo "  Done."

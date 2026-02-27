@@ -135,10 +135,7 @@ echo "  ╔═══════════════════════
 echo "  ║        SUBMISSION POLICY GATE (OPA)                  ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo ""
-echo "  OPA evaluates wasm_af.submit BEFORE the plan is built."
-echo "  data.config.allowed_task_types controls which task types are accepted."
-echo ""
-echo "  Submitting type='forbidden-task' (not in allowed_task_types)..."
+echo "  → Submitting type='forbidden-task' ${DIM}(not in allowed_task_types)${RST}..."
 DENY_BODY=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8080/tasks \
     -H "Content-Type: application/json" \
     -d '{"type":"forbidden-task","query":"this should be rejected"}')
@@ -147,10 +144,7 @@ DENY_MSG=$(echo "$DENY_BODY" | head -1)
 echo "    HTTP status: $DENY_HTTP"
 echo "    Response:    $DENY_MSG"
 if [ "$DENY_HTTP" = "403" ]; then
-    echo ""
-    echo "  Task rejected at submission time. No plan was built. No WASM was loaded."
-    echo "  The deny message came from submit.rego:"
-    echo "    deny_message := sprintf(\"task type %q is not allowed\", [input.task_type])"
+    echo "    ${GRN}✓ Rejected before plan is built.${RST}"
 fi
 echo ""
 
@@ -198,33 +192,19 @@ echo "  ╔═══════════════════════
 echo "  ║           SANDBOX CAPABILITY ASSIGNMENTS            ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo ""
-echo "  Each step got its own Extism plugin instance, created with exactly:"
-echo ""
-
 NUM_FETCHES=$(echo "$STATE" | jq '[.plan[] | select(.agent_type == "url-fetch")] | length')
 echo "$STATE" | jq -r '
     .plan[] | select(.agent_type == "url-fetch") |
-    "    url-fetch   HTTP \u2192 policy-scoped per URL (\(.params.url // "n/a"))     LLM host fn: absent     [\(.status)]"'
+    "    url-fetch   HTTP → \(.params.url // "n/a")     LLM: absent     [\(.status)]"'
 echo "$STATE" | jq -r '
     .plan[] | select(.agent_type == "summarizer") |
-    "    summarizer  HTTP \u2192 (none)                  LLM host fn: injected   [\(.status)]"'
-echo ""
-echo "  $NUM_FETCHES url-fetch instances ran in parallel. Each could only reach its own domain."
-echo "  The Extism runtime enforces allowed_hosts — not application code."
-echo ""
-echo "  No url-fetch instance could call LLM: the import doesn't exist in its module."
-echo "  The summarizer couldn't make HTTP requests: no HTTP capability in its manifest."
-echo "  These are not advisory rules. They are physical constraints of the WASM sandbox."
+    "    summarizer  HTTP → (none)                       LLM: injected   [\(.status)]"'
 echo ""
 
 # ── Cross-instance isolation proof ────────────────────────────────────────────
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║        CROSS-INSTANCE ISOLATION                     ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
-echo ""
-echo "  The claim: an instance scoped to webassembly.org cannot reach wasmcloud.com."
-echo "  Proof: create a url-fetch instance with allowed_hosts=[webassembly.org]"
-echo "  and ask it to fetch https://wasmcloud.com/."
 echo ""
 
 if [ "${#URL_ARRAY[@]}" -lt 2 ]; then
@@ -267,12 +247,9 @@ else
         echo ""
         STEP_ERR_LC=$(echo "$STEP_ERR" | tr '[:upper:]' '[:lower:]')
         if [ "$STEP_STATUS" = "failed" ] && ! echo "$STEP_ERR_LC" | grep -q "no rule permits"; then
-            echo "  The plugin ran. The HTTP call was blocked by wazero — not by Go code."
-            echo "  $SECOND_DOMAIN is in the server allow list, so the pre-flight check passed."
-            echo "  The sandbox enforced the per-instance boundary."
+            echo "    ${GRN}✓ Blocked by wazero allowed_hosts (not application code).${RST}"
         elif [ "$STEP_STATUS" = "denied" ] || echo "$STEP_ERR_LC" | grep -q "no rule permits"; then
-            echo "  This probe was denied by OPA policy before plugin instantiation."
-            echo "  To prove sandbox isolation, use URLS whose domains are in data.config.allowed_domains."
+            echo "    ${DIM}Denied by OPA before plugin instantiation.${RST}"
         fi
     fi
     fi
@@ -284,8 +261,6 @@ echo "  ╔═══════════════════════
 echo "  ║        POLICY ENGINE (OPA / Rego)                   ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo ""
-echo "  OPA evaluated one policy decision per step (deny-by-default Rego policy):"
-echo ""
 echo "$STATE" | jq -r '
     .plan[] | select(.agent_type == "url-fetch") |
     "    wasm-af:\(.agent_type)  →  http   →  PERMITTED"'
@@ -293,22 +268,11 @@ echo "$STATE" | jq -r '
     .plan[] | select(.agent_type == "summarizer") |
     "    wasm-af:\(.agent_type)  →  llm    →  PERMITTED"'
 echo ""
-echo "  Policy is deny-by-default. Any capability not listed above is denied."
-echo "  The Rego policy is compiled once at startup and evaluated natively in Go."
-echo ""
 
 # ── Dynamic allow list ─────────────────────────────────────────────────────────
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║        LIVE ALLOW LIST (NATS KV, no restart)        ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
-echo ""
-echo "  Two distinct enforcement layers, unified through OPA:"
-echo "    1. Domain allowlist (NATS KV → OPA data store → Rego policy)."
-echo "       data.config.allowed_domains is checked by the Rego policy before"
-echo "       plugin instantiation. NATS KV updates push into OPA live."
-echo "    2. Per-instance allowed_hosts (Extism) — set by the Rego policy."
-echo "       The policy returns allowed_hosts=[domain], enforced by wazero."
-echo "       HTTP calls to unlisted hosts fail inside the sandbox."
 echo ""
 
 if ! command -v nats >/dev/null 2>&1; then
@@ -352,10 +316,7 @@ else
         STEP_ERR=$(echo "$DENY_STATE" | jq -r '.plan[0].error // ""')
         echo "    url-fetch step: $STEP_STATUS"
         [ -n "$STEP_ERR" ] && echo "    reason: $STEP_ERR"
-        if [ "$STEP_STATUS" = "denied" ]; then
-            echo "    OPA denied this step — domain not in data.config.allowed_domains."
-            echo "    extism.NewPlugin() was never called. Zero WASM bytecode executed."
-        fi
+        [ "$STEP_STATUS" = "denied" ] && echo "    ${GRN}✓ Denied — no WASM loaded.${RST}"
     fi
     echo ""
 
@@ -393,22 +354,8 @@ echo "  ╔═══════════════════════
 echo "  ║        POLICY-DRIVEN CONFIG INJECTION                ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo ""
-echo "  The Rego policy can inject config key-value pairs into a plugin's"
-echo "  Extism manifest. Secrets flow from data.json → OPA → plugin config."
-echo "  They never appear in the task request or in WASM memory of other agents."
-echo ""
-echo "  policy.rego says:"
-echo '    config := {"brave_api_key": data.secrets.brave_api_key} if {'
-echo '        input.step.agent_type == "web-search"'
-echo '        data.secrets.brave_api_key'
-echo '    }'
-echo '    config := {"mock_results": "true"} if {'
-echo '        input.step.agent_type == "web-search"'
-echo '        not data.secrets.brave_api_key'
-echo '    }'
-echo ""
-echo "  data.json has no Brave key, so OPA injects mock_results=true instead."
-echo "  Running a 'research' task (web-search → summarizer) to demonstrate..."
+echo "  Rego injects config into plugin manifests. No Brave key in data.json,"
+echo "  so OPA injects mock_results=true into the web-search plugin."
 echo ""
 
 RESEARCH_ID=$(curl -sf -X POST http://localhost:8080/tasks \
@@ -436,14 +383,7 @@ else
     echo ""
 
     if [ "$R_STATUS" = "completed" ]; then
-        echo ""
-        echo "  web-search agent received mock_results=true from policy — no API key needed."
-        echo "  The summarizer received the mock results and produced a summary."
-        echo ""
-        echo "  To use a real Brave API key, add it to data.json:"
-        echo '    {"secrets": {"brave_api_key": "BSA..."}}'
-        echo "  The Rego policy will inject it into the web-search plugin's config."
-        echo "  The key never appears in the task request or in any other agent's sandbox."
+        echo "    ${GRN}✓ Completed.${RST} Add brave_api_key to data.json for real search results."
     else
         echo "  Research task status: $R_STATUS"
         [ "$R_STATUS" = "failed" ] && echo "  Error: $(echo "$R_STATE" | jq -r '.error')"
