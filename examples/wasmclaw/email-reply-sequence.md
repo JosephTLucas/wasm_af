@@ -2,76 +2,89 @@
 
 ## Scenario A: Clean email (happy path)
 
+![](scenarioA.png)
+
 ```mermaid
 sequenceDiagram
-    participant Client as run.sh
-    participant API as Orchestrator API
-    participant Loop as runTask loop
-    participant OPA as OPA Policy
-    participant WASM as WASM Runtime
+    participant C as Client
+    participant A as API
+    participant L as Loop
+    participant P as OPA
+    participant W as WASM
 
-    Client->>API: POST /tasks type email-reply, reply_to_index 0
-    API->>OPA: evaluateSubmitPolicy email-reply
-    OPA-->>API: allow
-    API->>Loop: EmailReplyBuilder plan: email-read, responder, email-send
-    API-->>Client: 202 task_id
+    C->>A: POST /tasks email_reply index=0
+    A->>P: submit policy check
+    P-->>A: allow
+    A->>L: build plan: read, respond, send
+    A-->>C: 202 Accepted
 
-    Note over Loop: Step 0 email-read
-    Loop->>OPA: evaluateStepPolicy email-read, prior_results empty
-    OPA-->>Loop: allow
-    Loop->>WASM: create email_read.wasm, execute, destroy
-    WASM-->>Loop: emails: alice clean, bob clean, support injected
-    Note over Loop: store in state.Results skill_output
+    rect rgb(240, 248, 255)
+    Note right of L: Step 0: email_read
+    L->>P: step policy check
+    P-->>L: allow
+    L->>W: email_read.wasm execute
+    W-->>L: 3 emails returned
+    end
 
-    Note over Loop: Step 1 responder
-    Loop->>OPA: evaluateStepPolicy responder, prior_results has skill_output
-    Note over OPA: emails index 0 is alice clean - no pattern match
-    OPA-->>Loop: allow
-    Loop->>WASM: create responder.wasm, llm_complete, destroy
-    WASM-->>Loop: response Draft reply
+    rect rgb(240, 255, 240)
+    Note right of L: Step 1: responder
+    L->>P: step policy with prior_results
+    Note right of P: index 0 = alice, clean, no match
+    P-->>L: allow
+    L->>W: responder.wasm llm_complete
+    W-->>L: draft reply generated
+    end
 
-    Note over Loop: Step 2 email-send
-    Loop->>OPA: evaluateStepPolicy email-send
-    OPA-->>Loop: allow
-    Loop->>WASM: create email_send.wasm, send_email host fn, destroy
-    WASM-->>Loop: status sent
+    rect rgb(240, 255, 240)
+    Note right of L: Step 2: email_send
+    L->>P: step policy check
+    P-->>L: allow
+    L->>W: email_send.wasm send_email
+    W-->>L: sent ok
+    end
 
-    Loop-->>API: task status completed
-    Client->>API: GET /tasks/id
-    API-->>Client: status completed with response and lifecycle
+    L-->>A: task completed
+    C->>A: GET /tasks/id
+    A-->>C: completed with response
 ```
 
 ## Scenario B: Injected email (blocked)
 
+![](scenarioB.png)
+
 ```mermaid
 sequenceDiagram
-    participant Client as run.sh
-    participant API as Orchestrator API
-    participant Loop as runTask loop
-    participant OPA as OPA Policy
-    participant WASM as WASM Runtime
+    participant C as Client
+    participant A as API
+    participant L as Loop
+    participant P as OPA
+    participant W as WASM
 
-    Client->>API: POST /tasks type email-reply, reply_to_index 2
-    API->>OPA: evaluateSubmitPolicy email-reply
-    OPA-->>API: allow
-    API->>Loop: EmailReplyBuilder plan: email-read, responder, email-send
-    API-->>Client: 202 task_id
+    C->>A: POST /tasks email_reply index=2
+    A->>P: submit policy check
+    P-->>A: allow
+    A->>L: build plan: read, respond, send
+    A-->>C: 202 Accepted
 
-    Note over Loop: Step 0 email-read
-    Loop->>OPA: evaluateStepPolicy email-read, prior_results empty
-    OPA-->>Loop: allow
-    Loop->>WASM: create email_read.wasm, execute, destroy
-    WASM-->>Loop: emails: alice clean, bob clean, support injected
-    Note over Loop: store in state.Results skill_output
+    rect rgb(240, 248, 255)
+    Note right of L: Step 0: email_read
+    L->>P: step policy check
+    P-->>L: allow
+    L->>W: email_read.wasm execute
+    W-->>L: 3 emails returned
+    end
 
-    Note over Loop: Step 1 responder
-    Loop->>OPA: evaluateStepPolicy responder, prior_results has skill_output
-    Note over OPA: emails index 2 is support injected - pattern match!
-    OPA-->>Loop: DENY jailbreak detected
-    Loop->>Loop: mark step denied and failTask
-    Note over Loop: Step 2 email-send NEVER RUNS
+    rect rgb(255, 235, 235)
+    Note right of L: Step 1: responder
+    L->>P: step policy with prior_results
+    Note right of P: index 2 = injection, pattern matched!
+    P-->>L: DENY jailbreak detected
+    L->>L: mark denied, fail task
+    end
 
-    Loop-->>API: task status failed
-    Client->>API: GET /tasks/id
-    API-->>Client: status failed with error and lifecycle
+    Note right of L: Step 2 email_send: NEVER RUNS
+
+    L-->>A: task failed
+    C->>A: GET /tasks/id
+    A-->>C: failed with deny reason
 ```
