@@ -1,4 +1,4 @@
-use agent_types::{TaskInput, TaskOutput};
+use agent_types::{LlmMessage, LlmRequest, LlmResponse, TaskInput, TaskOutput};
 use extism_pdk::*;
 
 #[derive(serde::Deserialize)]
@@ -29,27 +29,6 @@ struct SummaryOutput {
     summary: String,
     source_query: String,
     source_count: usize,
-}
-
-#[derive(serde::Serialize)]
-struct LlmRequest {
-    model: String,
-    messages: Vec<LlmMessage>,
-    max_tokens: u32,
-    temperature: Option<f32>,
-}
-
-#[derive(serde::Serialize)]
-struct LlmMessage {
-    role: String,
-    content: String,
-}
-
-#[derive(serde::Deserialize)]
-#[allow(dead_code)]
-struct LlmResponse {
-    content: String,
-    model_used: String,
 }
 
 #[host_fn]

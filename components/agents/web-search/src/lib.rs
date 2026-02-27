@@ -43,6 +43,10 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
     let req: SearchRequest = serde_json::from_str(&input.payload)
         .map_err(|e| Error::msg(format!("payload parse error: {e}")))?;
 
+    if req.query.trim().is_empty() {
+        return Err(Error::msg("query field is required and must not be empty").into());
+    }
+
     let mock_mode = config::get("mock_results")
         .unwrap_or(None)
         .map(|v| v.trim().eq_ignore_ascii_case("true"))
@@ -135,4 +139,56 @@ fn percent_encode(s: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn percent_encode_alphanumeric() {
+        assert_eq!(percent_encode("hello123"), "hello123");
+    }
+
+    #[test]
+    fn percent_encode_spaces() {
+        assert_eq!(percent_encode("hello world"), "hello+world");
+    }
+
+    #[test]
+    fn percent_encode_special_chars() {
+        assert_eq!(percent_encode("a&b=c"), "a%26b%3Dc");
+    }
+
+    #[test]
+    fn percent_encode_unreserved() {
+        assert_eq!(percent_encode("test-case_v1.0~beta"), "test-case_v1.0~beta");
+    }
+
+    #[test]
+    fn percent_encode_empty() {
+        assert_eq!(percent_encode(""), "");
+    }
+
+    #[test]
+    fn percent_encode_unicode() {
+        let result = percent_encode("日本");
+        assert!(!result.contains("日"));
+        assert!(result.starts_with('%'));
+    }
+
+    #[test]
+    fn mock_results_returns_three() {
+        let results = mock_results("test query");
+        assert_eq!(results.len(), 3);
+        assert!(results[0].title.contains("test query"));
+    }
+
+    #[test]
+    fn mock_results_has_urls() {
+        let results = mock_results("anything");
+        for r in &results {
+            assert!(r.url.starts_with("https://"));
+        }
+    }
 }

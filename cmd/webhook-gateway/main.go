@@ -13,15 +13,22 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
 const (
 	defaultListenAddr      = ":8081"
 	defaultOrchestratorURL = "http://localhost:8080"
-	pollInterval           = 500 * time.Millisecond
+	initialPollInterval    = 250 * time.Millisecond
+	maxPollInterval        = 2 * time.Second
 	maxPollDuration        = 30 * time.Second
 )
+
+var httpClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -39,10 +46,32 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	logger.Info("webhook-gateway listening", "addr", listenAddr, "orchestrator", orchURL)
-	if err := http.ListenAndServe(listenAddr, mux); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Error("gateway error", "err", err)
-		os.Exit(1)
+	srv := &http.Server{
+		Addr:         listenAddr,
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		logger.Info("webhook-gateway listening", "addr", listenAddr, "orchestrator", orchURL)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("gateway error", "err", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-sigCh
+	logger.Info("shutdown requested")
+
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutCancel()
+	if err := srv.Shutdown(shutCtx); err != nil {
+		logger.Error("shutdown error", "err", err)
 	}
 }
 
@@ -122,7 +151,7 @@ func (g *gateway) submitTask(ctx context.Context, req MessageRequest) (string, e
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return "", fmt.Errorf("orchestrator request: %w", err)
 	}
@@ -143,25 +172,27 @@ func (g *gateway) submitTask(ctx context.Context, req MessageRequest) (string, e
 }
 
 // pollForResponse polls GET /tasks/{id} until the task completes and extracts
-// the responder's output.
+// the responder's output. Uses exponential backoff starting from 250ms up to 2s.
 func (g *gateway) pollForResponse(ctx context.Context, taskID string) (string, error) {
 	deadline := time.Now().Add(maxPollDuration)
 	url := fmt.Sprintf("%s/tasks/%s", g.orchURL, taskID)
+	interval := initialPollInterval
 
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(pollInterval):
+		case <-time.After(interval):
 		}
 
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return "", fmt.Errorf("build poll request: %w", err)
 		}
-		resp, err := http.DefaultClient.Do(httpReq)
+		resp, err := httpClient.Do(httpReq)
 		if err != nil {
 			g.logger.Warn("poll request failed", "err", err)
+			interval = backoff(interval)
 			continue
 		}
 
@@ -169,11 +200,13 @@ func (g *gateway) pollForResponse(ctx context.Context, taskID string) (string, e
 		resp.Body.Close()
 
 		if resp.StatusCode != http.StatusOK {
+			interval = backoff(interval)
 			continue
 		}
 
 		var state taskStateView
 		if err := json.Unmarshal(raw, &state); err != nil {
+			interval = backoff(interval)
 			continue
 		}
 
@@ -183,10 +216,19 @@ func (g *gateway) pollForResponse(ctx context.Context, taskID string) (string, e
 		case "failed":
 			return "", fmt.Errorf("task failed: %s", state.Error)
 		}
-		// still running — keep polling
+
+		interval = backoff(interval)
 	}
 
 	return "", fmt.Errorf("timed out after %s", maxPollDuration)
+}
+
+func backoff(current time.Duration) time.Duration {
+	next := current * 2
+	if next > maxPollInterval {
+		return maxPollInterval
+	}
+	return next
 }
 
 // taskStateView is a minimal view of the orchestrator's TaskState JSON.
@@ -218,7 +260,7 @@ func extractResponse(state taskStateView) string {
 		if err := json.Unmarshal([]byte(payload), &out); err == nil && out.Response != "" {
 			return out.Response
 		}
-		return payload // fallback: raw payload
+		return payload
 	}
 	return "(no response)"
 }

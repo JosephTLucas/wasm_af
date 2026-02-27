@@ -1,0 +1,103 @@
+stages:
+  - lint
+  - test
+  - build
+
+variables:
+  CARGO_HOME: ${CI_PROJECT_DIR}/.cargo
+  GOPATH: ${CI_PROJECT_DIR}/.go
+
+# ── Lint ─────────────────────────────────────────────────────────────────────
+
+go-vet:
+  stage: lint
+  image: golang:1.25
+  script:
+    - go vet ./...
+
+rust-clippy:
+  stage: lint
+  image: rust:latest
+  before_script:
+    - rustup target add wasm32-unknown-unknown wasm32-wasip1
+    - rustup component add clippy
+  script:
+    - cd components
+    - HOST_TARGET=$(rustc -vV | grep host | awk '{print $2}')
+    - cargo clippy --target "$HOST_TARGET" -- -D warnings
+  cache:
+    key: rust-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .cargo/
+      - components/target/
+
+# ── Test ─────────────────────────────────────────────────────────────────────
+
+go-test:
+  stage: test
+  image: golang:1.25
+  script:
+    - go test ./provider/orchestrator/ ./pkg/...
+
+rust-test:
+  stage: test
+  image: rust:latest
+  before_script:
+    - rustup target add wasm32-unknown-unknown wasm32-wasip1
+  script:
+    - cd components
+    - HOST_TARGET=$(rustc -vV | grep host | awk '{print $2}')
+    - cargo test --target "$HOST_TARGET"
+  cache:
+    key: rust-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .cargo/
+      - components/target/
+
+opa-test:
+  stage: test
+  image:
+    name: openpolicyagent/opa:latest
+    entrypoint: [""]
+  script:
+    - |
+      for d in examples/*/; do
+        if ls "$d"*_test.rego >/dev/null 2>&1; then
+          echo "=== $d ==="
+          opa test "$d" -v
+        fi
+      done
+
+# ── Build ────────────────────────────────────────────────────────────────────
+
+build-plugins:
+  stage: build
+  image: rust:latest
+  before_script:
+    - rustup target add wasm32-unknown-unknown wasm32-wasip1
+  script:
+    - cd components
+    - cargo build --release
+    - cargo build --release -p file-ops --target wasm32-wasip1
+  artifacts:
+    paths:
+      - components/target/wasm32-unknown-unknown/release/*.wasm
+      - components/target/wasm32-wasip1/release/file_ops.wasm
+    expire_in: 1 week
+  cache:
+    key: rust-${CI_COMMIT_REF_SLUG}
+    paths:
+      - .cargo/
+      - components/target/
+
+build-orchestrator:
+  stage: build
+  image: golang:1.25
+  script:
+    - mkdir -p bin
+    - go build -o bin/orchestrator ./provider/orchestrator/
+    - go build -o bin/webhook-gateway ./cmd/webhook-gateway/
+  artifacts:
+    paths:
+      - bin/
+    expire_in: 1 week

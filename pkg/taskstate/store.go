@@ -21,12 +21,29 @@ const (
 	BucketPayloads = "wasm-af-payloads"
 )
 
+// TaskStore is the interface the orchestrator depends on for task persistence.
+// Implementations must be safe for concurrent use.
+type TaskStore interface {
+	Put(ctx context.Context, state *TaskState) error
+	Get(ctx context.Context, taskID string) (*TaskState, error)
+	Update(ctx context.Context, taskID string, fn func(*TaskState) error) error
+	Delete(ctx context.Context, taskID string) error
+	AppendAudit(ctx context.Context, event *AuditEvent) error
+	PutPayload(ctx context.Context, key, payload string) error
+	GetPayload(ctx context.Context, key string) (string, error)
+	DeletePayload(ctx context.Context, key string) error
+}
+
 // Store provides task state operations backed by NATS JetStream KV.
+// It implements the TaskStore interface.
 type Store struct {
 	tasks    jetstream.KeyValue
 	audit    jetstream.KeyValue
 	payloads jetstream.KeyValue
 }
+
+// compile-time assertion
+var _ TaskStore = (*Store)(nil)
 
 // NewStore creates or updates the three JetStream KV buckets and returns a Store.
 // It is safe to call repeatedly — existing buckets are re-used via CreateOrUpdateKeyValue.

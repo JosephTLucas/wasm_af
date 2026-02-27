@@ -11,3 +11,8 @@ allow if {
 allow if {
 	input.task_type == "email-reply"
 }
+
+deny_message := msg if {
+	not allow
+	msg := sprintf("task type %q is not allowed; permitted types: chat, email-reply", [input.task_type])
+}

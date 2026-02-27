@@ -33,6 +33,12 @@ deny_message := "jailbreak detected in email content — responder blocked" if {
 	email_reply_jailbreak
 }
 
+deny_message := msg if {
+	not allow
+	not email_reply_jailbreak
+	msg := sprintf("no rule permits %s (%s); deny-by-default", [input.step.agent_type, input.agent.capability])
+}
+
 # Web search: requires web_search_enabled flag.
 allow if {
 	input.step.agent_type == "web-search"

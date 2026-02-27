@@ -234,6 +234,7 @@ curl localhost:8080/tasks/<task-id> | jq .
 
 | Variable | Default | Description |
 |---|---|---|
+| `LISTEN_ADDR` | `:8080` | HTTP server listen address |
 | `WASM_DIR` | `./components/target/wasm32-unknown-unknown/release` | Directory containing compiled `.wasm` plugins |
 | `NATS_URL` | `nats://127.0.0.1:4222` | NATS server address |
 | `OPA_POLICY` | — | Path to `.rego` file or directory (**required**) |
@@ -246,11 +247,13 @@ curl localhost:8080/tasks/<task-id> | jq .
 | `LLM_MODEL` | `gpt-4o-mini` | Model name for the LLM endpoint |
 | `LLM_TEMPERATURE` | — | Default sampling temperature (applied when the agent doesn't specify one) |
 | `LLM_TOP_P` | — | Default nucleus sampling parameter (applied when the agent doesn't specify one) |
+| `LLM_TIMEOUT_SEC` | `120` | HTTP client timeout for LLM API calls |
 | `PLUGIN_TIMEOUT_SEC` | `30` | Max wall-clock seconds per plugin invocation |
 | `PLUGIN_MAX_MEMORY_PAGES` | `256` | Max WASM memory pages per plugin (64 KiB each) |
 | `PLUGIN_MAX_HTTP_BYTES` | `4194304` | Max HTTP response size in bytes per plugin |
 | `SHELL_ALLOWED_COMMANDS` | `ls,cat,pwd,...` | Comma-separated command binary allowlist (host-side defense-in-depth) |
 | `SHELL_ALLOWED_PATHS` | `/tmp/wasmclaw` | Comma-separated path bases for shell argument confinement |
+| `SHELL_TIMEOUT_SEC` | `10` | Max wall-clock seconds per shell command execution |
 | `SANDBOX_RUNTIMES_DIR` | `./runtimes` | Directory containing WASI runtime `.wasm` files (e.g. `python.wasm`) |
 | `SANDBOX_TIMEOUT_SEC` | `30` | Max wall-clock seconds per sandboxed code execution |
 | `SANDBOX_ALLOWED_LANGUAGES` | `python` | Comma-separated language allowlist for sandbox-exec |
@@ -287,4 +290,4 @@ The `run.sh` scripts map convenience variables to the orchestrator's LLM config:
 
 ## License
 
-TBD
+Apache License 2.0 — see [LICENSE](LICENSE).

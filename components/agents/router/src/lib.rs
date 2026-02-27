@@ -1,4 +1,4 @@
-use agent_types::{TaskInput, TaskOutput};
+use agent_types::{LlmMessage, LlmRequest, LlmResponse, TaskInput, TaskOutput};
 use extism_pdk::*;
 
 #[derive(serde::Deserialize)]
@@ -41,27 +41,6 @@ struct RouterParams {
     folder: String,
 }
 
-#[derive(serde::Serialize)]
-struct LlmRequest {
-    model: String,
-    messages: Vec<LlmMessage>,
-    max_tokens: u32,
-    temperature: Option<f32>,
-}
-
-#[derive(serde::Serialize)]
-struct LlmMessage {
-    role: String,
-    content: String,
-}
-
-#[derive(serde::Deserialize)]
-#[allow(dead_code)]
-struct LlmResponse {
-    content: String,
-    model_used: String,
-}
-
 #[host_fn]
 extern "ExtismHost" {
     fn llm_complete(input: Json<LlmRequest>) -> Json<LlmResponse>;
@@ -99,6 +78,10 @@ User: "remember my name is Alice" → {"skill":"direct-answer","params":{}}
 pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
     let req: RouterInput = serde_json::from_str(&input.payload)
         .map_err(|e| Error::msg(format!("payload parse error: {e}")))?;
+
+    if req.message.trim().is_empty() {
+        return Err(Error::msg("message field is required and must not be empty").into());
+    }
 
     let user_content = if req.history.is_empty() {
         req.message.clone()

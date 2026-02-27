@@ -18,10 +18,10 @@ build-plugins: ## Build Rust WASM plugins (Extism)
 	@cd components && cargo build --release
 	@echo "WASM plugins built in components/target/wasm32-unknown-unknown/release/"
 
-wasmclaw: ## Build wasmclaw agents (router, shell, file-ops, memory, responder, sandbox-exec, email-*) + gateway + runtimes
+wasmclaw: ## Build wasmclaw agents (router, shell, file-ops, memory, responder, sandbox-exec, email-*, web-search) + gateway + runtimes
 	@mkdir -p $(BINDIR)
-	@# router, shell, memory, responder, sandbox-exec, email-send, email-read: no WASI stdlib → unknown-unknown
-	@cd components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec -p email-send -p email-read
+	@# router, shell, memory, responder, sandbox-exec, email-send, email-read, web-search: no WASI stdlib → unknown-unknown
+	@cd components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec -p email-send -p email-read -p web-search
 	@# file-ops: uses std::fs via WASI filesystem API → wasip1
 	@cd components && cargo build --release -p file-ops --target wasm32-wasip1
 	@cp components/target/wasm32-wasip1/release/file_ops.wasm \

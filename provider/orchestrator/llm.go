@@ -34,12 +34,13 @@ type llmResponse struct {
 
 // LLMConfig holds all LLM-related configuration captured at startup.
 type LLMConfig struct {
-	Mode        string   // "mock", "real" (local Ollama), or "api" (remote OpenAI-compat)
+	Mode        string        // "mock", "real" (local Ollama), or "api" (remote OpenAI-compat)
 	BaseURL     string
 	APIKey      string
 	Model       string
-	Temperature *float32 // default when agent doesn't specify
-	TopP        *float32 // default when agent doesn't specify
+	Temperature *float32      // default when agent doesn't specify
+	TopP        *float32      // default when agent doesn't specify
+	Timeout     time.Duration // HTTP client timeout for LLM calls
 }
 
 // NewLLMHostFnProvider returns a HostFnProvider that injects the llm_complete
@@ -75,7 +76,7 @@ func NewLLMHostFnProvider(cfg LLMConfig, logger *slog.Logger) HostFnProvider {
 				if cfg.Mode == "mock" {
 					resp = mockLLM(req)
 				} else {
-					resp, err = realLLM(ctx, req, cfg.BaseURL, cfg.APIKey, cfg.Model)
+					resp, err = realLLM(ctx, req, cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.Timeout)
 					if err != nil {
 						logger.Error("llm_complete: upstream error", "err", err)
 						stack[0] = 0
@@ -251,7 +252,7 @@ func mockEchoLLM(req llmRequest) llmResponse {
 
 const llmMaxRetries = 2
 
-func realLLM(ctx context.Context, req llmRequest, baseURL, apiKey, defaultModel string) (llmResponse, error) {
+func realLLM(ctx context.Context, req llmRequest, baseURL, apiKey, defaultModel string, llmTimeout time.Duration) (llmResponse, error) {
 	model := req.Model
 	if model == "" {
 		model = defaultModel
@@ -278,7 +279,10 @@ func realLLM(ctx context.Context, req llmRequest, baseURL, apiKey, defaultModel 
 		endpoint = base + "/v1/chat/completions"
 	}
 
-	client := &http.Client{Timeout: 120 * time.Second}
+	if llmTimeout <= 0 {
+		llmTimeout = 120 * time.Second
+	}
+	client := &http.Client{Timeout: llmTimeout}
 
 	var lastErr error
 	for attempt := 0; attempt <= llmMaxRetries; attempt++ {

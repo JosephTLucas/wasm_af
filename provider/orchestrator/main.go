@@ -25,8 +25,8 @@ import (
 )
 
 const (
-	listenAddr     = ":8080"
-	defaultNatsURL = "nats://127.0.0.1:4222"
+	defaultListenAddr = ":8080"
+	defaultNatsURL    = "nats://127.0.0.1:4222"
 )
 
 func main() {
@@ -41,6 +41,7 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	listenAddr := envOr("LISTEN_ADDR", defaultListenAddr)
 	wasmDir := envOr("WASM_DIR", "./components/target/wasm32-unknown-unknown/release")
 	natsURL := envOr("NATS_URL", defaultNatsURL)
 	opaPolicyPath := os.Getenv("OPA_POLICY")
@@ -77,11 +78,13 @@ func run(logger *slog.Logger) error {
 	// ── HOST FUNCTION REGISTRY ──────────────────────────────────────────────
 	hostFns := NewHostFnRegistry()
 
+	llmTimeoutSec := envOrInt("LLM_TIMEOUT_SEC", 120)
 	llmCfg := LLMConfig{
 		Mode:    envOr("LLM_MODE", "mock"),
 		BaseURL: envOr("LLM_BASE_URL", ""),
 		APIKey:  envOr("LLM_API_KEY", ""),
 		Model:   envOr("LLM_MODEL", "gpt-4o-mini"),
+		Timeout: time.Duration(llmTimeoutSec) * time.Second,
 	}
 	if v := os.Getenv("LLM_TEMPERATURE"); v != "" {
 		if f, err := strconv.ParseFloat(v, 32); err == nil {
@@ -127,7 +130,8 @@ func run(logger *slog.Logger) error {
 	// Shell host functions — load config from env.
 	shellAllowedCmds := strings.Split(envOr("SHELL_ALLOWED_COMMANDS", "ls,cat,pwd,echo,find,date,uname,wc,head,tail"), ",")
 	shellAllowedPaths := strings.Split(envOr("SHELL_ALLOWED_PATHS", "/tmp/wasmclaw"), ",")
-	hostFns.Register("exec_command", NewShellHostFnProvider(shellAllowedCmds, shellAllowedPaths, logger))
+	shellTimeoutSec := envOrInt("SHELL_TIMEOUT_SEC", 10)
+	hostFns.Register("exec_command", NewShellHostFnProvider(shellAllowedCmds, shellAllowedPaths, time.Duration(shellTimeoutSec)*time.Second, logger))
 
 	// Sandbox execution — runs code inside WASM (Wazero), not on the host.
 	sandboxRuntimesDir := envOr("SANDBOX_RUNTIMES_DIR", "./runtimes")

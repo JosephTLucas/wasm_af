@@ -45,6 +45,12 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
     if req.to.is_empty() {
         return Err(Error::msg("recipient address is required").into());
     }
+    if req.subject.trim().is_empty() {
+        return Err(Error::msg("subject is required and must not be empty").into());
+    }
+    if req.body.trim().is_empty() {
+        return Err(Error::msg("body is required and must not be empty").into());
+    }
 
     let Json(resp) = unsafe {
         send_email(Json(SendEmailRequest {

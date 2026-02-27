@@ -93,7 +93,7 @@ if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
     rustup target add wasm32-wasip1 || die "Failed to add wasm32-wasip1 target."
 fi
 
-(cd components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec -p email-send -p email-read 2>&1) \
+(cd components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec -p email-send -p email-read -p web-search 2>&1) \
     || die "Rust build failed (unknown-unknown agents)."
 (cd components && cargo build --release -p file-ops --target wasm32-wasip1 2>&1) \
     || die "Rust build failed (file-ops)."

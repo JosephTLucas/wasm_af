@@ -25,7 +25,7 @@ pull-model: ## Ensure the Ollama model is pulled (does nothing if already presen
 build: ## Build wasmclaw WASM agents, orchestrator, and webhook-gateway
 	@mkdir -p $(ROOT)/bin
 	@echo "Building Rust WASM agents (unknown-unknown)..."
-	@cd $(ROOT)/components && cargo build --release -p router -p shell -p memory -p responder -p email-send -p email-read 2>&1
+	@cd $(ROOT)/components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec -p email-send -p email-read -p web-search 2>&1
 	@echo "Building file-ops (wasm32-wasip1 → WASI filesystem)..."
 	@cd $(ROOT)/components && cargo build --release -p file-ops --target wasm32-wasip1 2>&1
 	@cp $(ROOT)/components/target/wasm32-wasip1/release/file_ops.wasm \

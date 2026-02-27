@@ -23,7 +23,7 @@ import (
 // and Rego policies.
 type Orchestrator struct {
 	logger   *slog.Logger
-	store    *taskstate.Store
+	store    taskstate.TaskStore
 	wasmDir  string // directory containing compiled .wasm plugins
 	policy   *OPAEvaluator
 	registry *AgentRegistry

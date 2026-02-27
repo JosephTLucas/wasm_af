@@ -68,7 +68,7 @@ var shellMetachars = []string{";", "|", "&", "`", "$(", ">", "<"}
 // allowedCmds is a binary-name allowlist (defense-in-depth; OPA is primary).
 // allowedPaths confines path-like arguments (defense-in-depth; OPA is primary).
 // An empty list for either disables that host-side check.
-func NewShellHostFnProvider(allowedCmds, allowedPaths []string, logger *slog.Logger) HostFnProvider {
+func NewShellHostFnProvider(allowedCmds, allowedPaths []string, cmdTimeout time.Duration, logger *slog.Logger) HostFnProvider {
 	cmdSet := make(map[string]bool, len(allowedCmds))
 	for _, c := range allowedCmds {
 		if c = strings.TrimSpace(c); c != "" {
@@ -114,7 +114,7 @@ func NewShellHostFnProvider(allowedCmds, allowedPaths []string, logger *slog.Log
 				}
 
 				args := strings.Fields(req.Command)
-				resp := doExecCommand(ctx, args[0], args[1:], workDir, logger)
+				resp := doExecCommand(ctx, args[0], args[1:], workDir, cmdTimeout, logger)
 				writeExecResponse(p, stack, resp, logger)
 			},
 			[]extism.ValueType{extism.ValueTypePTR},
@@ -199,8 +199,8 @@ func writeExecResponse(p *extism.CurrentPlugin, stack []uint64, resp execRespons
 	stack[0] = offset
 }
 
-func doExecCommand(ctx context.Context, binary string, args []string, workDir string, logger *slog.Logger) execResponse {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+func doExecCommand(ctx context.Context, binary string, args []string, workDir string, timeout time.Duration, logger *slog.Logger) execResponse {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer

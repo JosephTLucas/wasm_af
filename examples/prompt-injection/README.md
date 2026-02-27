@@ -31,6 +31,7 @@ The url-fetch agent retrieves this page. The raw HTML — injection included —
 
 ## Files
 
+- `agents.json` — agent registry (wasm names, capabilities, host functions, payload fields)
 - `malicious_page.html` — the poisoned page
 - `policy.rego` / `submit.rego` — step and submission policies
 - `data.json` — domain allowlist, allowed task types

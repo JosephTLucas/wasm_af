@@ -36,6 +36,7 @@ Two network enforcement layers address different threats: the server-side domain
 
 ## Files
 
+- `agents.json` — agent registry (wasm names, capabilities, host functions, payload fields)
 - `policy.rego` / `submit.rego` — step and submission policies
 - `data.json` — domain allowlist, allowed task types
 - `*_test.rego` — OPA tests (`opa test .`)
