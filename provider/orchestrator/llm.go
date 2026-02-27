@@ -19,6 +19,7 @@ type llmRequest struct {
 	Messages    []llmMessage `json:"messages"`
 	MaxTokens   uint32       `json:"max_tokens"`
 	Temperature *float32     `json:"temperature,omitempty"`
+	TopP        *float32     `json:"top_p,omitempty"`
 }
 
 type llmMessage struct {
@@ -31,10 +32,20 @@ type llmResponse struct {
 	ModelUsed string `json:"model_used"`
 }
 
+// LLMConfig holds all LLM-related configuration captured at startup.
+type LLMConfig struct {
+	Mode        string   // "mock", "real" (local Ollama), or "api" (remote OpenAI-compat)
+	BaseURL     string
+	APIKey      string
+	Model       string
+	Temperature *float32 // default when agent doesn't specify
+	TopP        *float32 // default when agent doesn't specify
+}
+
 // NewLLMHostFnProvider returns a HostFnProvider that injects the llm_complete
 // host function. All LLM configuration is captured in the closure — the
 // Orchestrator struct has no LLM-specific fields.
-func NewLLMHostFnProvider(mode, baseURL, apiKey, model string, logger *slog.Logger) HostFnProvider {
+func NewLLMHostFnProvider(cfg LLMConfig, logger *slog.Logger) HostFnProvider {
 	return func(_ *Orchestrator) []extism.HostFunction {
 		fn := extism.NewHostFunctionWithStack(
 			"llm_complete",
@@ -53,11 +64,18 @@ func NewLLMHostFnProvider(mode, baseURL, apiKey, model string, logger *slog.Logg
 					return
 				}
 
+				if req.Temperature == nil && cfg.Temperature != nil {
+					req.Temperature = cfg.Temperature
+				}
+				if req.TopP == nil && cfg.TopP != nil {
+					req.TopP = cfg.TopP
+				}
+
 				var resp llmResponse
-				if mode == "mock" {
+				if cfg.Mode == "mock" {
 					resp = mockLLM(req)
 				} else {
-					resp, err = realLLM(ctx, req, baseURL, apiKey, model)
+					resp, err = realLLM(ctx, req, cfg.BaseURL, cfg.APIKey, cfg.Model)
 					if err != nil {
 						logger.Error("llm_complete: upstream error", "err", err)
 						stack[0] = 0
@@ -134,6 +152,33 @@ func mockRoute(msg string) mockRouteResult {
 			Params: map[string]string{"command": "ls " + path},
 		}
 
+	case strings.Contains(lower, "send email") || strings.Contains(lower, "send an email"):
+		to := "alice@example.com"
+		subject := "Hello"
+		body := msg
+		if idx := strings.Index(lower, " to "); idx >= 0 {
+			rest := msg[idx+4:]
+			if sayIdx := strings.Index(strings.ToLower(rest), " saying "); sayIdx >= 0 {
+				to = strings.TrimSpace(rest[:sayIdx])
+				body = strings.TrimSpace(rest[sayIdx+7:])
+				subject = body
+				if len(subject) > 60 {
+					subject = subject[:60]
+				}
+			}
+		}
+		return mockRouteResult{
+			Skill:  "email-send",
+			Params: map[string]string{"to": to, "subject": subject, "body": body},
+		}
+
+	case (strings.Contains(lower, "email") || strings.Contains(lower, "inbox")) &&
+		(strings.Contains(lower, "check") || strings.Contains(lower, "read my")):
+		return mockRouteResult{
+			Skill:  "email-read",
+			Params: map[string]string{"folder": "inbox"},
+		}
+
 	case strings.Contains(lower, "write") && strings.Contains(msg, " to /"):
 		parts := strings.SplitN(msg, " to /", 2)
 		raw := strings.TrimSpace(parts[0])
@@ -204,14 +249,22 @@ func realLLM(ctx context.Context, req llmRequest, baseURL, apiKey, defaultModel 
 		Messages    []llmMessage `json:"messages"`
 		MaxTokens   uint32       `json:"max_tokens"`
 		Temperature *float32     `json:"temperature,omitempty"`
+		TopP        *float32     `json:"top_p,omitempty"`
 	}
 	body, _ := json.Marshal(openAIReq{
 		Model: model, Messages: req.Messages,
 		MaxTokens: req.MaxTokens, Temperature: req.Temperature,
+		TopP: req.TopP,
 	})
 
-	url := strings.TrimRight(baseURL, "/") + "/v1/chat/completions"
-	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	base := strings.TrimRight(baseURL, "/")
+	var endpoint string
+	if strings.HasSuffix(base, "/v1") {
+		endpoint = base + "/chat/completions"
+	} else {
+		endpoint = base + "/v1/chat/completions"
+	}
+	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 	if apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+apiKey)

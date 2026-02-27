@@ -3,8 +3,12 @@
 A personal AI assistant with multi-skill routing, where every skill runs in a WASM sandbox gated by OPA policy. Intended as a more secure alternative to the typical "give the LLM a subprocess" agent pattern.
 
 ```bash
-make demo
+make demo                              # mock LLM (deterministic routing)
+LLM_MODE=api make demo                 # NVIDIA NIM API (needs NV_API_KEY)
+LLM_MODE=real make demo                # local Ollama
 ```
+
+For API inference, set `NV_API_KEY` in a `.env` file at the repo root or export it in your shell. The default model is `nvdev/nvidia/llama-3.3-nemotron-super-49b-v1` (override with `NV_MODEL`).
 
 Prerequisites: Rust (wasm32-unknown-unknown + wasm32-wasip1 targets), Go 1.25+, jq, and either `nats-server` or `wash` (for its bundled NATS). Optional: `opa` CLI (for static policy tests), `wasm-tools` (for binary import analysis).
 
@@ -43,6 +47,24 @@ The LLM router proposes a skill and parameters. Before the skill step is spliced
 - OPA policy is required. The orchestrator refuses to start without `OPA_POLICY`.
 - Nil-policy paths return deny, not allow — both for step evaluation and task submission.
 - Router splice fails closed: if policy is unavailable, the skill step is not inserted.
+
+### Secure secret handling (email agents)
+
+Two email agents demonstrate how secrets are isolated in production:
+
+| | email-send | email-read |
+|---|---|---|
+| **Secret location** | Go closure (SMTP credentials) | OPA-injected plugin config (`email_api_key`) |
+| **Host functions** | `send_email` (host mediates delivery) | (none) |
+| **Network capability** | None (host fn handles network) | None (no HTTP imports, no sockets) |
+| **Prompt injection risk** | N/A — no untrusted input processing | Email body contains injection attempt |
+| **Why injection fails** | Agent never sees credentials | No `exec_command`, no HTTP, no way to exfiltrate |
+
+The email-read agent receives a mock inbox where one email contains a prompt injection attempting to exfiltrate `email_api_key`. Three layers prevent this:
+
+1. **Binary proof**: `email_read.wasm` has zero `extism:host/user` imports — no host functions to call
+2. **Network isolation**: No HTTP capability, no `allowed_hosts`, no WASI sockets
+3. **Secret scoping**: The responder agent (which produces the user-facing reply) runs in a separate WASM instance with no `email_api_key` in its config
 
 ### Sandboxed code execution (Python-in-WASM)
 
@@ -87,6 +109,8 @@ POST /message { message: "calculate fibonacci of 10" }
 | file-ops | file | (none) | WASI std::fs, Wazero AllowedPaths |
 | sandbox-exec | sandbox | sandbox_exec | Wazero instance per invocation, no network |
 | web-search | http | (none) | Extism AllowedHosts |
+| email-send | email | send_email | Host fn mediates SMTP; credentials in Go closure |
+| email-read | email | (none) | OPA-injected API key; no network, no host fns |
 | responder | llm | llm_complete | LLM only, no I/O |
 
 ## Files
@@ -95,6 +119,6 @@ POST /message { message: "calculate fibonacci of 10" }
 - `data.json` — OPA external data: command allowlists, path allowlists, language allowlists, feature flags
 - `policy.rego` — step policy: per-agent authorization rules, shell hardening helpers, config injection
 - `submit.rego` — submission policy: restricts task types to `chat`
-- `policy_test.rego` / `submit_test.rego` — 42 OPA unit tests proving security properties statically
-- `Makefile` — `make demo` (build + run), `make test-policy` (OPA tests only), `make clean`
+- `policy_test.rego` / `submit_test.rego` — 51 OPA unit tests proving security properties statically
+- `Makefile` — `make demo` / `make demo-api` / `make demo-real` (build + run), `make test-policy` (OPA tests only), `make clean`
 - `run.sh` — builds, starts services, runs OPA tests, then exercises every agent and security boundary

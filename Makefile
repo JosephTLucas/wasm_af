@@ -1,4 +1,4 @@
-.PHONY: build build-orchestrator build-plugins build-gateway wasmclaw test demo clean help
+.PHONY: build build-orchestrator build-plugins build-gateway wasmclaw test demo wasmclaw-demo wasmclaw-demo-api wasmclaw-demo-real clean help
 
 BINDIR := bin
 
@@ -18,10 +18,10 @@ build-plugins: ## Build Rust WASM plugins (Extism)
 	@cd components && cargo build --release
 	@echo "WASM plugins built in components/target/wasm32-unknown-unknown/release/"
 
-wasmclaw: ## Build wasmclaw agents (router, shell, file-ops, memory, responder, sandbox-exec) + gateway + runtimes
+wasmclaw: ## Build wasmclaw agents (router, shell, file-ops, memory, responder, sandbox-exec, email-*) + gateway + runtimes
 	@mkdir -p $(BINDIR)
-	@# router, shell, memory, responder, sandbox-exec: no WASI stdlib needed → unknown-unknown
-	@cd components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec
+	@# router, shell, memory, responder, sandbox-exec, email-send, email-read: no WASI stdlib → unknown-unknown
+	@cd components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec -p email-send -p email-read
 	@# file-ops: uses std::fs via WASI filesystem API → wasip1
 	@cd components && cargo build --release -p file-ops --target wasm32-wasip1
 	@cp components/target/wasm32-wasip1/release/file_ops.wasm \
@@ -31,7 +31,7 @@ wasmclaw: ## Build wasmclaw agents (router, shell, file-ops, memory, responder, 
 	@# Download Python WASM runtime for sandbox-exec (if not already present)
 	@if [ ! -f runtimes/python.wasm ]; then bash runtimes/build.sh; fi
 	@echo "wasmclaw build complete."
-	@echo "  WASM (unknown-unknown): router, shell, memory, responder, sandbox-exec"
+	@echo "  WASM (unknown-unknown): router, shell, memory, responder, sandbox-exec, email-send, email-read"
 	@echo "  WASM (wasip1 → copied): file_ops"
 	@echo "  Sandbox runtime: runtimes/python.wasm"
 	@echo "  Gateway: $(BINDIR)/webhook-gateway"
@@ -57,8 +57,14 @@ test-policy: ## Run OPA policy tests for all examples
 demo: build ## Run the fan-out-summarizer example end-to-end
 	./examples/fan-out-summarizer/run.sh
 
-wasmclaw-demo: wasmclaw ## Build and run the wasmclaw demo
+wasmclaw-demo: wasmclaw ## Build and run wasmclaw (mock LLM)
 	./examples/wasmclaw/run.sh
+
+wasmclaw-demo-api: wasmclaw ## Build and run wasmclaw with NVIDIA NIM API (needs NV_API_KEY)
+	LLM_MODE=api ./examples/wasmclaw/run.sh
+
+wasmclaw-demo-real: wasmclaw ## Build and run wasmclaw with local Ollama
+	LLM_MODE=real ./examples/wasmclaw/run.sh
 
 ##@ Util
 

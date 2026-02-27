@@ -68,5 +68,26 @@
       "code":     "step.params.code",
       "language": "step.params.language"
     }
+  },
+  "email-send": {
+    "wasm_name": "email_send",
+    "capability": "email",
+    "context_key": "skill_output",
+    "host_functions": ["send_email"],
+    "payload_fields": {
+      "to":      "step.params.to",
+      "subject": "step.params.subject",
+      "body":    "step.params.body"
+    }
+  },
+  "email-read": {
+    "wasm_name": "email_read",
+    "capability": "email",
+    "context_key": "skill_output",
+    "host_functions": [],
+    "payload_fields": {
+      "folder": "step.params.folder",
+      "count":  5
+    }
   }
 }

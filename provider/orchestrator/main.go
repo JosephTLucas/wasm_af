@@ -75,13 +75,30 @@ func run(logger *slog.Logger) error {
 
 	// ── HOST FUNCTION REGISTRY ──────────────────────────────────────────────
 	hostFns := NewHostFnRegistry()
-	hostFns.Register("llm_complete", NewLLMHostFnProvider(
-		envOr("LLM_MODE", "mock"),
-		envOr("LLM_BASE_URL", ""),
-		envOr("LLM_API_KEY", ""),
-		envOr("LLM_MODEL", "gpt-4o-mini"),
-		logger,
-	))
+
+	llmCfg := LLMConfig{
+		Mode:    envOr("LLM_MODE", "mock"),
+		BaseURL: envOr("LLM_BASE_URL", ""),
+		APIKey:  envOr("LLM_API_KEY", ""),
+		Model:   envOr("LLM_MODEL", "gpt-4o-mini"),
+	}
+	if v := os.Getenv("LLM_TEMPERATURE"); v != "" {
+		if f, err := strconv.ParseFloat(v, 32); err == nil {
+			t := float32(f)
+			llmCfg.Temperature = &t
+		}
+	}
+	if v := os.Getenv("LLM_TOP_P"); v != "" {
+		if f, err := strconv.ParseFloat(v, 32); err == nil {
+			t := float32(f)
+			llmCfg.TopP = &t
+		}
+	}
+	if llmCfg.Mode == "api" && llmCfg.APIKey == "" {
+		return fmt.Errorf("LLM_MODE=api requires LLM_API_KEY to be set")
+	}
+	logger.Info("LLM configured", "mode", llmCfg.Mode, "model", llmCfg.Model)
+	hostFns.Register("llm_complete", NewLLMHostFnProvider(llmCfg, logger))
 
 	// ── OPA POLICY + DATA ────────────────────────────────────────────────────
 	var initialData map[string]any
@@ -147,6 +164,15 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("nats connect: %w", err)
 	}
 	defer nc.Close()
+
+	// Email send — SMTP credentials would be captured here in production.
+	emailAllowedDomains := make(map[string]bool)
+	for _, d := range strings.Split(envOr("EMAIL_ALLOWED_DOMAINS", "example.com,partner-corp.com"), ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			emailAllowedDomains[d] = true
+		}
+	}
+	hostFns.Register("send_email", NewEmailSendHostFnProvider(emailAllowedDomains, logger))
 
 	// Memory host functions — require live NATS connection.
 	kvGetProvider, kvPutProvider := NewMemoryHostFnProviders(nc, logger)

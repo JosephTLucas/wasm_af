@@ -1,5 +1,5 @@
 .claude/*
-
+.env
 # Go
 bin/
 *.test

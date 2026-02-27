@@ -1,6 +1,6 @@
 {
   "config": {
-    "allowed_skills": ["web-search", "shell", "file-ops", "sandbox-exec", "direct-answer"],
+    "allowed_skills": ["web-search", "shell", "file-ops", "sandbox-exec", "direct-answer", "email-send", "email-read"],
     "allowed_commands": ["ls", "cat", "pwd", "echo", "find", "date", "uname", "wc", "head", "tail"],
     "allowed_paths": ["/tmp/wasmclaw"],
     "allowed_languages": ["python"],
@@ -8,7 +8,11 @@
     "web_search_enabled": true,
     "shell_enabled": true,
     "file_ops_enabled": true,
-    "sandbox_exec_enabled": true
+    "sandbox_exec_enabled": true,
+    "email_send_enabled": true,
+    "email_read_enabled": true
   },
-  "secrets": {}
+  "secrets": {
+    "email_api_key": "sk-email-demo-key-2026-REDACTED"
+  }
 }

@@ -90,8 +90,14 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
         llm_complete(Json(llm_req)).map_err(|e| Error::msg(format!("LLM error: {e}")))?
     };
 
+    let raw = llm_resp.content.trim();
+    let cleaned = match raw.rfind("</think>") {
+        Some(idx) => raw[idx + "</think>".len()..].trim(),
+        None => raw,
+    };
+
     let output = ResponderOutput {
-        response: llm_resp.content,
+        response: cleaned.to_string(),
     };
     let payload = serde_json::to_string(&output)
         .map_err(|e| Error::msg(format!("serialization error: {e}")))?;

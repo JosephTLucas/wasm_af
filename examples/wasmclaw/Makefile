@@ -1,18 +1,31 @@
-.PHONY: demo build test-policy clean help
+.PHONY: demo demo-api demo-real build pull-model test-policy clean help
 
 ROOT    := $(shell cd ../.. && pwd)
+MODEL   ?= qwen3:4b
 
 ##@ Demo
 
-demo: ## Build everything, run OPA policy tests, and start the wasmclaw demo
+demo: build ## Build + run with mock LLM (deterministic routing, no external deps)
 	@$(ROOT)/examples/wasmclaw/run.sh
 
+demo-api: build ## Build + run with NVIDIA NIM API (needs NV_API_KEY in .env or env)
+	@LLM_MODE=api $(ROOT)/examples/wasmclaw/run.sh
+
+demo-real: pull-model build ## Build + run with local Ollama
+	@LLM_MODE=real MODEL=$(MODEL) $(ROOT)/examples/wasmclaw/run.sh
+
 ##@ Setup
+
+pull-model: ## Ensure the Ollama model is pulled (does nothing if already present)
+	@command -v ollama >/dev/null 2>&1 || \
+		(echo "Error: ollama not installed. Get it at https://ollama.com" && exit 1)
+	@ollama show "$(MODEL)" >/dev/null 2>&1 || \
+		(echo "Pulling $(MODEL) (this may take a few minutes)..." && ollama pull "$(MODEL)")
 
 build: ## Build wasmclaw WASM agents, orchestrator, and webhook-gateway
 	@mkdir -p $(ROOT)/bin
 	@echo "Building Rust WASM agents (unknown-unknown)..."
-	@cd $(ROOT)/components && cargo build --release -p router -p shell -p memory -p responder 2>&1
+	@cd $(ROOT)/components && cargo build --release -p router -p shell -p memory -p responder -p email-send -p email-read 2>&1
 	@echo "Building file-ops (wasm32-wasip1 → WASI filesystem)..."
 	@cd $(ROOT)/components && cargo build --release -p file-ops --target wasm32-wasip1 2>&1
 	@cp $(ROOT)/components/target/wasm32-wasip1/release/file_ops.wasm \

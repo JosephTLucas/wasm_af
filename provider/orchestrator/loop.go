@@ -25,6 +25,10 @@ type routerParams struct {
 	Op       string `json:"op"`
 	Code     string `json:"code"`
 	Language string `json:"language"`
+	To       string `json:"to"`
+	Subject  string `json:"subject"`
+	Body     string `json:"body"`
+	Folder   string `json:"folder"`
 }
 
 // runTask is the main agent loop for a task. It runs in its own goroutine.
@@ -194,6 +198,7 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		}); err != nil {
 			log.Error("audit write failed", "event", taskstate.EventPolicyDeny, "err", err)
 		}
+		log.Info("step denied")
 		return fmt.Errorf("policy denied: %s", denyMsg)
 	}
 
@@ -396,6 +401,8 @@ func (o *Orchestrator) spliceRoutedStep(ctx context.Context, state *taskstate.Ta
 		return fmt.Errorf("parse router output: %w", err)
 	}
 
+	o.logger.Info("router decision", "skill", route.Skill, "task_id", state.TaskID)
+
 	// direct-answer means no skill step needed.
 	if route.Skill == "" || route.Skill == "direct-answer" {
 		return nil
@@ -475,6 +482,20 @@ func (o *Orchestrator) spliceRoutedStep(ctx context.Context, state *taskstate.Ta
 		}
 		if route.Params.Language != "" {
 			params["language"] = route.Params.Language
+		}
+	case "email-send":
+		if route.Params.To != "" {
+			params["to"] = route.Params.To
+		}
+		if route.Params.Subject != "" {
+			params["subject"] = route.Params.Subject
+		}
+		if route.Params.Body != "" {
+			params["body"] = route.Params.Body
+		}
+	case "email-read":
+		if route.Params.Folder != "" {
+			params["folder"] = route.Params.Folder
 		}
 	}
 

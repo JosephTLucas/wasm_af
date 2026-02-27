@@ -184,11 +184,16 @@ func (o *Orchestrator) invokeAgent(
 		EnableWasi: true,
 	}
 
+	stepLog := o.logger.With("task_id", input.TaskID, "step_id", input.StepID, "agent", wasmName)
+
+	createStart := time.Now()
 	plugin, err := extism.NewPlugin(ctx, manifest, config, opts.HostFunctions)
 	if err != nil {
 		return nil, fmt.Errorf("create plugin %s: %w", wasmName, err)
 	}
-	defer plugin.Close(ctx)
+	stepLog.Info("plugin created",
+		"host_fns", len(opts.HostFunctions),
+		"create_ms", time.Since(createStart).Milliseconds())
 
 	if opts.Timeout > 0 {
 		plugin.Timeout = opts.Timeout
@@ -196,10 +201,16 @@ func (o *Orchestrator) invokeAgent(
 
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
+		plugin.Close(ctx)
 		return nil, fmt.Errorf("marshal input: %w", err)
 	}
 
+	execStart := time.Now()
 	_, outputJSON, err := plugin.Call("execute", inputJSON)
+	execDur := time.Since(execStart)
+
+	plugin.Close(ctx)
+	stepLog.Info("plugin destroyed", "exec_ms", execDur.Milliseconds())
 	if err != nil {
 		return nil, fmt.Errorf("call execute on %s: %w", wasmName, err)
 	}

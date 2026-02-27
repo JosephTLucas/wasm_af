@@ -9,11 +9,16 @@ WASM_AF leverages the sandboxed, ephemeral nature of WebAssembly to create a zer
 ## Quick Start
 
 ```bash
-# Run the fan-out summarizer demo (builds everything, fetches 3 URLs in parallel, summarizes)
+# Fan-out summarizer (builds everything, fetches 3 URLs in parallel, summarizes)
 ./examples/fan-out-summarizer/run.sh
+
+# Wasmclaw personal assistant — with NVIDIA NIM API inference
+LLM_MODE=api NV_API_KEY="nvapi-..." ./examples/wasmclaw/run.sh
 ```
 
 Prerequisites: [Rust](https://rustup.rs/), [Go](https://go.dev/) 1.25+, [NATS server](https://nats.io/) (or [wash](https://wasmcloud.com/docs/installation/) which bundles one), [jq](https://jqlang.github.io/jq/).
+
+For API inference, set `NV_API_KEY` in a `.env` file at the repo root (gitignored) or export it in your shell.
 
 ---
 
@@ -130,6 +135,8 @@ If a task decomposes into `fetch → fetch → fetch → summarize`, the orchest
 
 LLM inference is delivered as a **host function** that the orchestrator injects into plugins that need it. The summarizer plugin receives an `llm_complete` host function. The url-fetch plugin does not — the function doesn't exist in its WASM instance. Even if a prompt injection tries to call it, the import is missing from the module's address space.
 
+The LLM backend is configurable: mock (deterministic, no network), NVIDIA NIM API (remote inference via OpenAI-compatible endpoint), or local Ollama. In all modes, credentials live in a Go closure — never serialized into WASM memory.
+
 ### 5. Lifecycle as a Security Primitive
 
 WASM plugins are designed for rapid instantiation. WASM_AF treats this as a security feature, not just a performance one.
@@ -164,7 +171,8 @@ wasm_af/
 │   ├── hostfns_shell.go            # exec_command: exec.Command + path/binary/metachar gates
 │   ├── hostfns_memory.go           # kv_get/kv_put: NATS JetStream KV
 │   ├── hostfns_sandbox.go          # sandbox_exec: runs code in a nested Wazero instance
-│   ├── llm.go                      # llm_complete host function provider
+│   ├── hostfns_email.go            # send_email: SMTP delivery via host fn (creds in closure)
+│   ├── llm.go                      # llm_complete host function provider (mock / API / Ollama)
 │   ├── registry.go                 # agent registry with enrichments
 │   ├── builders.go                 # plan builders (including generic JSON-driven)
 │   ├── builder_chat.go             # chat plan builder (memory → router → splice → responder)
@@ -185,6 +193,8 @@ wasm_af/
 │   │   ├── shell/                  # host command execution via exec_command host fn
 │   │   ├── sandbox-exec/           # sandboxed code execution via sandbox_exec host fn
 │   │   ├── file-ops/               # WASI std::fs (wasm32-wasip1, no host functions)
+│   │   ├── email-send/              # host fn email delivery (SMTP creds never in WASM)
+│   │   ├── email-read/             # sandboxed inbox reader (OPA-injected API key)
 │   │   ├── memory/                 # conversation history via kv_get/kv_put
 │   │   ├── responder/              # LLM response generation
 │   │   ├── url-fetch/              # fetches a URL, returns page content
@@ -200,11 +210,11 @@ wasm_af/
     │
     └── wasmclaw/                   # personal AI assistant with two-tier execution
         ├── run.sh                  # builds, runs, exercises every agent + security boundary
-        ├── agents.json             # agent registry (7 agents, capability/host-fn mappings)
+        ├── agents.json             # agent registry (9 agents, capability/host-fn mappings)
         ├── policy.rego             # shell hardening, sandbox policy, file-ops confinement
         ├── data.json               # command/path/language allowlists, feature flags
-        ├── policy_test.rego        # 42 OPA tests (metachar, path, language, splice)
-        ├── Makefile                # make demo, make test-policy
+        ├── policy_test.rego        # 51 OPA tests (metachar, path, language, splice, email)
+        ├── Makefile                # make demo, make demo-api, make test-policy
         └── README.md
 ```
 
@@ -223,7 +233,14 @@ wasm_af/
 Multi-skill chat assistant with two-tier execution: LLM-generated code runs in a Python-in-WASM sandbox (Wazero), while host commands use `exec.Command` with OPA binary/path/metachar gates. The demo exercises every agent and proves each security boundary at runtime.
 
 ```bash
+# Mock LLM (deterministic routing, no external dependencies)
 ./examples/wasmclaw/run.sh
+
+# NVIDIA NIM API (remote inference — needs NV_API_KEY in .env or environment)
+LLM_MODE=api ./examples/wasmclaw/run.sh
+
+# Local Ollama
+LLM_MODE=real ./examples/wasmclaw/run.sh
 ```
 
 ### Fan-Out Summarizer
@@ -286,10 +303,12 @@ curl localhost:8080/tasks/<task-id> | jq .
 | `OPA_DATA` | — | Path to a JSON data file (populates OPA data store at startup) |
 | `AGENT_REGISTRY_FILE` | — | Path to JSON agent registry file (required) |
 | `AGENT_REGISTRY` | — | Inline JSON agent registry (takes precedence over file) |
-| `LLM_MODE` | `mock` | `mock` for context-aware routing, `real` for upstream LLM |
-| `LLM_BASE_URL` | — | OpenAI-compatible API base URL |
-| `LLM_API_KEY` | — | API key for the LLM endpoint |
+| `LLM_MODE` | `mock` | `mock` for deterministic routing, `api` for remote inference (NVIDIA NIM, etc.), `real` for local Ollama |
+| `LLM_BASE_URL` | — | OpenAI-compatible API base URL (auto-detected: `/v1` suffix handled correctly) |
+| `LLM_API_KEY` | — | API key for the LLM endpoint (required when `LLM_MODE=api`) |
 | `LLM_MODEL` | `gpt-4o-mini` | Model name for the LLM endpoint |
+| `LLM_TEMPERATURE` | — | Default sampling temperature (applied when the agent doesn't specify one) |
+| `LLM_TOP_P` | — | Default nucleus sampling parameter (applied when the agent doesn't specify one) |
 | `PLUGIN_TIMEOUT_SEC` | `30` | Max wall-clock seconds per plugin invocation |
 | `PLUGIN_MAX_MEMORY_PAGES` | `256` | Max WASM memory pages per plugin (64 KiB each) |
 | `PLUGIN_MAX_HTTP_BYTES` | `4194304` | Max HTTP response size in bytes per plugin |

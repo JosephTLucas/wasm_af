@@ -386,6 +386,116 @@ test_sandbox_exec_denied_unlisted_language if {
 		with data.config.allowed_languages as ["python"]
 }
 
+# ── Functionality: email-send allowed under correct conditions ─────────────────
+
+test_email_send_allowed_when_enabled if {
+	allow with input as {
+		"step": {
+			"agent_type": "email-send",
+			"params": {"to": "alice@example.com", "subject": "hi", "body": "hello"},
+		},
+	}
+		with data.config.email_send_enabled as true
+}
+
+# ── Security: email-send denied when disabled ─────────────────────────────────
+
+test_email_send_denied_when_disabled if {
+	not allow with input as {
+		"step": {
+			"agent_type": "email-send",
+			"params": {"to": "alice@example.com", "subject": "hi", "body": "hello"},
+		},
+	}
+		with data.config.email_send_enabled as false
+}
+
+# ── Functionality: email-read allowed under correct conditions ────────────────
+
+test_email_read_allowed_when_enabled if {
+	allow with input as {
+		"step": {
+			"agent_type": "email-read",
+			"params": {"folder": "inbox"},
+		},
+	}
+		with data.config.email_read_enabled as true
+}
+
+# ── Security: email-read denied when disabled ─────────────────────────────────
+
+test_email_read_denied_when_disabled if {
+	not allow with input as {
+		"step": {
+			"agent_type": "email-read",
+			"params": {"folder": "inbox"},
+		},
+	}
+		with data.config.email_read_enabled as false
+}
+
+# ── Policy output: email-read receives email_api_key from secrets ─────────────
+
+test_email_read_receives_api_key_from_secrets if {
+	config.email_api_key == "real-key-123" with input as {
+		"step": {
+			"agent_type": "email-read",
+			"params": {"folder": "inbox"},
+		},
+	}
+		with data.config.email_read_enabled as true
+		with data.secrets.email_api_key as "real-key-123"
+}
+
+# ── Policy output: email-read gets mock key when no secret configured ─────────
+
+test_email_read_receives_mock_key_without_secret if {
+	config.email_api_key == "mock-email-api-key-DO-NOT-LEAK" with input as {
+		"step": {
+			"agent_type": "email-read",
+			"params": {"folder": "inbox"},
+		},
+	}
+		with data.config.email_read_enabled as true
+		with data.secrets as {}
+}
+
+# ── Security: email-send does NOT receive email_api_key ───────────────────────
+# Proves the secret is scoped only to email-read, not email-send.
+
+test_email_send_does_not_receive_api_key if {
+	not config.email_api_key with input as {
+		"step": {
+			"agent_type": "email-send",
+			"params": {"to": "alice@example.com", "subject": "hi", "body": "hello"},
+		},
+	}
+		with data.config.email_send_enabled as true
+		with data.secrets.email_api_key as "real-key-123"
+}
+
+# ── Security: router splice allows email skills when in list ──────────────────
+
+test_router_splice_allows_email_send if {
+	allow with input as {
+		"step": {
+			"agent_type": "router-splice",
+			"params": {"proposed_skill": "email-send"},
+		},
+	}
+		with data.config.allowed_skills as ["email-send", "email-read", "direct-answer"]
+}
+
+test_router_splice_allows_email_read if {
+	allow with input as {
+		"step": {
+			"agent_type": "router-splice",
+			"params": {"proposed_skill": "email-read"},
+		},
+	}
+		with data.config.allowed_skills as ["email-send", "email-read", "direct-answer"]
+}
+
 # ── Policy output: file-ops gets allowed_paths mount ─────────────────────────
 
 test_file_ops_receives_allowed_paths_mount if {

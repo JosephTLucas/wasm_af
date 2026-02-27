@@ -82,6 +82,21 @@ allow if {
 	startswith(input.step.params.path, concat("", [base, "/"]))
 }
 
+# Email send: host function mediates delivery; SMTP creds live in Go closure.
+# No secrets enter WASM — the agent only sees success/failure from the host fn.
+allow if {
+	input.step.agent_type == "email-send"
+	data.config.email_send_enabled
+}
+
+# Email read: sandboxed agent with OPA-injected API key (see config rules below).
+# Has zero host functions and zero network capability — structurally cannot
+# exfiltrate the key even if email content contains prompt injection.
+allow if {
+	input.step.agent_type == "email-read"
+	data.config.email_read_enabled
+}
+
 # Router splice validation: the proposed skill must be in the allowed_skills list.
 allow if {
 	input.step.agent_type == "router-splice"
@@ -93,6 +108,21 @@ allow if {
 # Shell: pass allowed_commands so the host fn can validate defense-in-depth.
 config["allowed_commands"] := concat(",", data.config.allowed_commands) if {
 	input.step.agent_type == "shell"
+}
+
+# Email read: inject email_api_key from secrets into plugin config.
+# The key flows: data.json → OPA → plugin manifest → WASM config API.
+# It never appears in task payloads or agent-to-agent communication.
+config["email_api_key"] := data.secrets.email_api_key if {
+	input.step.agent_type == "email-read"
+	data.secrets.email_api_key
+}
+
+# Email read fallback: inject a mock key when no real secret is configured,
+# so the agent can still run in demo/test mode.
+config["email_api_key"] := "mock-email-api-key-DO-NOT-LEAK" if {
+	input.step.agent_type == "email-read"
+	not data.secrets.email_api_key
 }
 
 # File ops: mount each allowed base path into the WASM sandbox (host path → guest path).

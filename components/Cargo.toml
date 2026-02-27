@@ -11,6 +11,8 @@ members = [
     "agents/memory",
     "agents/responder",
     "agents/sandbox-exec",
+    "agents/email-send",
+    "agents/email-read",
 ]
 
 [profile.release]

@@ -31,6 +31,14 @@ struct RouterParams {
     code: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     language: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    to: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    subject: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    body: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    folder: String,
 }
 
 #[derive(serde::Serialize)]
@@ -59,13 +67,18 @@ extern "ExtismHost" {
     fn llm_complete(input: Json<LlmRequest>) -> Json<LlmResponse>;
 }
 
-const SYSTEM_PROMPT: &str = r#"You are a routing assistant. Given a user message, determine which skill to invoke and extract the parameters. Respond with ONLY a valid JSON object, no markdown fences, no explanation.
+const SYSTEM_PROMPT: &str = r#"/no_think
+You are a routing assistant. Given a user message, determine which skill to invoke and extract the parameters. Respond with ONLY a valid JSON object, no markdown fences, no explanation, no thinking.
+
+You MUST select the most specific skill for each request. Only use "direct-answer" for pure knowledge questions that involve no files, commands, code, emails, or web searches.
 
 Available skills:
 - "web-search": search the web. Required params: {"query": "search terms"}
 - "shell": run a shell command on the host. Required params: {"command": "ls -la /tmp"}
 - "sandbox-exec": run Python code in a sandboxed WASM environment. Required params: {"language": "python", "code": "...source code..."}
 - "file-ops": read or write a file. Required params: {"op": "read|write", "path": "/tmp/file.txt"} (add "content" for write)
+- "email-send": send an email. Required params: {"to": "recipient@example.com", "subject": "Subject line", "body": "Email body text"}
+- "email-read": read/check email inbox. Required params: {"folder": "inbox"}
 - "direct-answer": answer directly without a skill. Params: {}
 
 Prefer "sandbox-exec" over "shell" when the user asks to run code, compute something, or execute a script. Use "shell" only for host commands like ls, find, date.
@@ -77,6 +90,8 @@ User: "what is 2+2?" → {"skill":"sandbox-exec","params":{"language":"python","
 User: "calculate fibonacci of 10" → {"skill":"sandbox-exec","params":{"language":"python","code":"def fib(n):\n  a,b=0,1\n  for _ in range(n): a,b=b,a+b\n  return a\nprint(fib(10))"}}
 User: "read file /tmp/notes.txt" → {"skill":"file-ops","params":{"op":"read","path":"/tmp/notes.txt"}}
 User: "write hello to /tmp/wasmclaw/test.txt" → {"skill":"file-ops","params":{"op":"write","path":"/tmp/wasmclaw/test.txt","content":"hello"}}
+User: "send an email to bob@example.com saying hello" → {"skill":"email-send","params":{"to":"bob@example.com","subject":"hello","body":"hello"}}
+User: "check my email" → {"skill":"email-read","params":{"folder":"inbox"}}
 User: "remember my name is Alice" → {"skill":"direct-answer","params":{}}
 "#;
 
@@ -114,8 +129,23 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
         llm_complete(Json(llm_req)).map_err(|e| Error::msg(format!("LLM error: {e}")))?
     };
 
-    // Parse LLM JSON output; fall back to direct-answer on any parse error.
-    let route: RouterOutput = serde_json::from_str(llm_resp.content.trim()).unwrap_or_else(|_| {
+    // Strip <think>...</think> blocks that some models (e.g. qwen3) emit
+    // before the actual JSON response.
+    let raw = llm_resp.content.trim();
+    let json_str = match raw.rfind("</think>") {
+        Some(idx) => raw[idx + "</think>".len()..].trim(),
+        None => raw,
+    };
+
+    // Strip markdown fences if the model wrapped the JSON in ```json ... ```.
+    let json_str = json_str
+        .strip_prefix("```json")
+        .or_else(|| json_str.strip_prefix("```"))
+        .and_then(|s| s.strip_suffix("```"))
+        .map(|s| s.trim())
+        .unwrap_or(json_str);
+
+    let route: RouterOutput = serde_json::from_str(json_str).unwrap_or_else(|_| {
         RouterOutput {
             skill: "direct-answer".to_string(),
             params: RouterParams::default(),
