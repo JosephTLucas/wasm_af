@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
@@ -34,15 +33,6 @@ type AgentMeta struct {
 // AgentRegistry holds the set of known agent types, loaded from a JSON config.
 type AgentRegistry struct {
 	agents map[string]*AgentMeta
-}
-
-// LoadAgentRegistry reads a JSON file mapping agent type names to AgentMeta.
-func LoadAgentRegistry(path string) (*AgentRegistry, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read agent registry: %w", err)
-	}
-	return ParseAgentRegistry(b)
 }
 
 // ParseAgentRegistry parses agent registry JSON bytes.

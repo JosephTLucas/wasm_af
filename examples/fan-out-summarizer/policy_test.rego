@@ -60,3 +60,19 @@ test_unknown_agent_denied if {
 	}
 		with data.config.allowed_domains as ["webassembly.org"]
 }
+
+test_web_search_config_mock_mode if {
+	config == {"mock_results": "true"} with input as {
+		"step": {"agent_type": "web-search"},
+		"agent": {"capability": "http"},
+	}
+		with data.secrets as {}
+}
+
+test_web_search_config_real_key if {
+	config == {"brave_api_key": "BSA-real-key"} with input as {
+		"step": {"agent_type": "web-search"},
+		"agent": {"capability": "http"},
+	}
+		with data.secrets.brave_api_key as "BSA-real-key"
+}

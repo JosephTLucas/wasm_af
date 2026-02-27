@@ -168,15 +168,21 @@ func (o *Orchestrator) evaluateStepPolicy(
 
 	enrichedParams := enrichParams(step.Params, meta.Enrichments)
 
+	stepInput := map[string]any{
+		"id":         step.ID,
+		"index":      stepIdx,
+		"agent_type": step.AgentType,
+		"group":      step.Group,
+		"params":     enrichedParams,
+	}
+	for _, e := range meta.Enrichments {
+		if v, ok := enrichedParams[e.Target]; ok && v != "" {
+			stepInput[e.Target] = v
+		}
+	}
+
 	input := map[string]any{
-		"step": map[string]any{
-			"id":         step.ID,
-			"index":      stepIdx,
-			"agent_type": step.AgentType,
-			"group":      step.Group,
-			"params":     enrichedParams,
-			"domain":     enrichedParams["domain"],
-		},
+		"step": stepInput,
 		"agent": map[string]any{
 			"wasm_name":      meta.WasmName,
 			"capability":     meta.Capability,

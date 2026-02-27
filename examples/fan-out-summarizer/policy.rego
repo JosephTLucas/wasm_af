@@ -38,6 +38,19 @@ allowed_hosts := [input.step.domain] if {
 	not input.step.params.restricted_to
 }
 
+# Policy-driven config injection: secrets and feature flags flow from OPA
+# data into the plugin's Extism config — never in the task request.
+# In production, replace mock_results with the real key from data.secrets.
+config := {"brave_api_key": data.secrets.brave_api_key} if {
+	input.step.agent_type == "web-search"
+	data.secrets.brave_api_key
+}
+
+config := {"mock_results": "true"} if {
+	input.step.agent_type == "web-search"
+	not data.secrets.brave_api_key
+}
+
 deny_message := msg if {
 	not allow
 	msg := sprintf("no rule permits %s (%s); deny-by-default", [input.step.agent_type, input.agent.capability])

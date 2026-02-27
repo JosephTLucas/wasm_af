@@ -10,5 +10,6 @@
       "research",
       "isolation-test"
     ]
-  }
+  },
+  "secrets": {}
 }

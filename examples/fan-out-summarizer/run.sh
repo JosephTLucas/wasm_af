@@ -114,6 +114,33 @@ echo ""
 # ── 4. Demo ───────────────────────────────────────────────────────────────────
 echo "  [4/4] Running demo..."
 echo ""
+
+# ── Submission policy gate ────────────────────────────────────────────────────
+echo "  ╔══════════════════════════════════════════════════════╗"
+echo "  ║        SUBMISSION POLICY GATE (OPA)                  ║"
+echo "  ╚══════════════════════════════════════════════════════╝"
+echo ""
+echo "  OPA evaluates wasm_af.submit BEFORE the plan is built."
+echo "  data.config.allowed_task_types controls which task types are accepted."
+echo ""
+echo "  Submitting type='forbidden-task' (not in allowed_task_types)..."
+DENY_BODY=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8080/tasks \
+    -H "Content-Type: application/json" \
+    -d '{"type":"forbidden-task","query":"this should be rejected"}')
+DENY_HTTP=$(echo "$DENY_BODY" | tail -1)
+DENY_MSG=$(echo "$DENY_BODY" | head -1)
+echo "    HTTP status: $DENY_HTTP"
+echo "    Response:    $DENY_MSG"
+if [ "$DENY_HTTP" = "403" ]; then
+    echo ""
+    echo "  Task rejected at submission time. No plan was built. No WASM was loaded."
+    echo "  The deny message came from submit.rego:"
+    echo "    deny_message := sprintf(\"task type %q is not allowed\", [input.task_type])"
+fi
+echo ""
+
+echo "  Now submitting type='fan-out-summarizer' (allowed)..."
+echo ""
 echo "        Query:  $QUERY"
 echo "        URLs:"
 IFS=',' read -ra URL_ARRAY <<< "$URLS"
@@ -336,6 +363,67 @@ else
         echo "    url-fetch step: $STEP_STATUS"
         echo ""
         echo "  Same URL. Same orchestrator process. Different allow list in NATS KV."
+    fi
+fi
+# ── Policy-driven config injection ────────────────────────────────────────────
+echo "  ╔══════════════════════════════════════════════════════╗"
+echo "  ║        POLICY-DRIVEN CONFIG INJECTION                ║"
+echo "  ╚══════════════════════════════════════════════════════╝"
+echo ""
+echo "  The Rego policy can inject config key-value pairs into a plugin's"
+echo "  Extism manifest. Secrets flow from data.json → OPA → plugin config."
+echo "  They never appear in the task request or in WASM memory of other agents."
+echo ""
+echo "  policy.rego says:"
+echo '    config := {"brave_api_key": data.secrets.brave_api_key} if {'
+echo '        input.step.agent_type == "web-search"'
+echo '        data.secrets.brave_api_key'
+echo '    }'
+echo '    config := {"mock_results": "true"} if {'
+echo '        input.step.agent_type == "web-search"'
+echo '        not data.secrets.brave_api_key'
+echo '    }'
+echo ""
+echo "  data.json has no Brave key, so OPA injects mock_results=true instead."
+echo "  Running a 'research' task (web-search → summarizer) to demonstrate..."
+echo ""
+
+RESEARCH_ID=$(curl -sf -X POST http://localhost:8080/tasks \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n \
+        --arg type "research" \
+        --arg query "What is WebAssembly?" \
+        '{type: $type, query: $query}')" \
+    | jq -r '.task_id')
+
+if [ -z "$RESEARCH_ID" ] || [ "$RESEARCH_ID" = "null" ]; then
+    echo "  ERROR: research task submission failed"
+else
+    echo "  Task ID: $RESEARCH_ID"
+    printf "  Waiting..."
+    R_STATUS="unknown"
+    R_STATE=""
+    for _ in $(seq 1 30); do
+        R_STATE=$(curl -sf "http://localhost:8080/tasks/${RESEARCH_ID}" || echo '{}')
+        R_STATUS=$(echo "$R_STATE" | jq -r '.status // "unknown"')
+        [ "$R_STATUS" = "completed" ] || [ "$R_STATUS" = "failed" ] && break
+        printf "."
+        sleep 2
+    done
+    echo ""
+
+    if [ "$R_STATUS" = "completed" ]; then
+        echo ""
+        echo "  web-search agent received mock_results=true from policy — no API key needed."
+        echo "  The summarizer received the mock results and produced a summary."
+        echo ""
+        echo "  To use a real Brave API key, add it to data.json:"
+        echo '    {"secrets": {"brave_api_key": "BSA..."}}'
+        echo "  The Rego policy will inject it into the web-search plugin's config."
+        echo "  The key never appears in the task request or in any other agent's sandbox."
+    else
+        echo "  Research task status: $R_STATUS"
+        [ "$R_STATUS" = "failed" ] && echo "  Error: $(echo "$R_STATE" | jq -r '.error')"
     fi
 fi
 echo ""

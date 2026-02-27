@@ -71,9 +71,8 @@ func (e *OPAEvaluator) EvaluateStep(ctx context.Context, input map[string]any) (
 }
 
 // EvaluateSubmit runs the wasm_af.submit policy. If the policy package
-// is not defined in the loaded modules, the result defaults to allow
-// (backward compatibility: existing policies without a submit package
-// should not block submissions).
+// is not defined in the loaded modules, the result defaults to allow —
+// the submit gate is opt-in.
 func (e *OPAEvaluator) EvaluateSubmit(ctx context.Context, input map[string]any) (*PolicyResult, error) {
 	rs, err := e.submitQuery.Eval(ctx, rego.EvalInput(input))
 	if err != nil {
