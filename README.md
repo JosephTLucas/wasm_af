@@ -220,7 +220,7 @@ A url-fetch agent fetches a page containing a hidden prompt injection that instr
 cd examples/prompt-injection && make demo
 ```
 
-Requires [Ollama](https://ollama.com) (the Makefile pulls `qwen3:1.7b` automatically).
+Requires [Ollama](https://ollama.com) (the Makefile pulls `gemma3:270m` automatically).
 
 ### Manual Step-by-Step
 

@@ -6,7 +6,7 @@ A web page contains hidden instructions telling the LLM to extract credentials a
 make demo
 ```
 
-Prerequisites: Rust, Go 1.25+, jq, nats-server, [Ollama](https://ollama.com) with `qwen3:1.7b` (pulled automatically by `make demo`).
+Prerequisites: Rust, Go 1.25+, jq, nats-server, [Ollama](https://ollama.com) with `gemma3:270m` (pulled automatically by `make demo`).
 
 Custom model:
 ```bash
