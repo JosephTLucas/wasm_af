@@ -103,7 +103,7 @@ NATS JetStream KV provides task state persistence and an immutable audit trail. 
 nats kv put wasm-af-config allowed-fetch-domains "webassembly.org,wasmcloud.com"
 ```
 
-**No inter-agent communication.** Agents do not talk to each other. The orchestrator mediates all data flow, stores intermediate results in NATS KV, and passes accumulated context to the next step.
+**No inter-agent communication.** Agents do not talk to each other. The orchestrator mediates all data flow, stores intermediate results in NATS KV, and passes context from ancestor steps to their dependents.
 
 **Host functions as capabilities.** LLM inference, shell execution, email delivery, and KV storage are host functions injected into plugins that need them. A plugin without the `llm_complete` import cannot call it — the function doesn't exist in the module's address space. Credentials (API keys, SMTP) live in Go closures; they are never written to WASM memory.
 
@@ -122,7 +122,7 @@ wasm_af/
 │   ├── main.go                     # standalone binary, env config, HTTP server
 │   ├── orchestrator.go             # Extism plugin lifecycle, param enrichment
 │   ├── policy.go                   # OPA evaluator (compiles Rego, evaluates per step)
-│   ├── loop.go                     # plan execution, parallel dispatch, router splice
+│   ├── loop.go                     # DAG scheduler, parallel dispatch, splice
 │   ├── hostfns.go                  # host function registry (dynamic, name-based)
 │   ├── hostfns_shell.go            # exec_command: exec.Command + path/binary/metachar gates
 │   ├── hostfns_memory.go           # kv_get/kv_put: NATS JetStream KV
@@ -131,10 +131,12 @@ wasm_af/
 │   ├── llm.go                      # llm_complete host function provider (mock / API / Ollama)
 │   ├── registry.go                 # agent registry with enrichments
 │   ├── builders.go                 # plan builders (including generic JSON-driven)
-│   ├── builder_chat.go             # chat plan builder (memory → router → splice → responder)
+│   ├── builder_chat.go             # chat plan builder (memory → router → responder → memory)
 │   └── taskstate.go                # HTTP handlers
 │
 ├── cmd/webhook-gateway/            # lightweight HTTP gateway (chat message → task → poll)
+│
+├── pkg/dag/                        # DAG: dependency graph, ready-set, ancestors, splice
 │
 ├── pkg/taskstate/                  # NATS JetStream KV: task state, audit log, payloads
 │

@@ -224,8 +224,9 @@ func (o *Orchestrator) invokeAgent(
 }
 
 // evaluateStepPolicy runs the wasm_af.authz policy with rich context
-// about the task, step, agent, and plan. Returns deny-all when no
-// policy is loaded.
+// about the task, step, agent, and plan. Prior results are scoped to
+// the step's transitive dependencies. Returns deny-all when no policy
+// is loaded.
 func (o *Orchestrator) evaluateStepPolicy(
 	ctx context.Context,
 	state *taskstate.TaskState,
@@ -247,7 +248,6 @@ func (o *Orchestrator) evaluateStepPolicy(
 		"id":         step.ID,
 		"index":      stepIdx,
 		"agent_type": step.AgentType,
-		"group":      step.Group,
 		"params":     enrichedParams,
 	}
 	for _, e := range meta.Enrichments {
@@ -256,9 +256,19 @@ func (o *Orchestrator) evaluateStepPolicy(
 		}
 	}
 
+	// Build prior_results from dependency ancestors (not all prior steps).
+	g, _ := buildDAG(state.Plan)
+	ancestorSet := make(map[string]bool)
+	if g != nil {
+		for _, id := range g.Ancestors(step.ID) {
+			ancestorSet[id] = true
+		}
+	}
 	priorResults := make(map[string]string)
-	for i := 0; i < stepIdx; i++ {
-		s := state.Plan[i]
+	for _, s := range state.Plan {
+		if !ancestorSet[s.ID] {
+			continue
+		}
 		v, ok := state.Results[s.OutputKey]
 		if !ok {
 			continue

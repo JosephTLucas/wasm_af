@@ -15,6 +15,7 @@
     "capability": "llm",
     "context_key": "router_output",
     "host_functions": ["llm_complete"],
+    "splice": true,
     "payload_fields": {
       "message": "task.context.message",
       "history": "step.params.history"

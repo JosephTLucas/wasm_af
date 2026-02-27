@@ -8,30 +8,53 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jolucas/wasm-af/pkg/dag"
 	"github.com/jolucas/wasm-af/pkg/taskstate"
 )
 
-// routerOutput mirrors the JSON returned by the router WASM agent.
-type routerOutput struct {
-	Skill  string       `json:"skill"`
-	Params routerParams `json:"params"`
+// spliceOutput is the generic format for a splice-flagged agent's output.
+// The router agent produces {"skill": "shell", "params": {"command": "ls"}} —
+// "skill" is accepted as an alias for "agent_type".
+type spliceOutput struct {
+	AgentType string            `json:"agent_type"`
+	Skill     string            `json:"skill"`
+	Params    map[string]string `json:"params"`
 }
 
-type routerParams struct {
-	Query    string `json:"query"`
-	Command  string `json:"command"`
-	Path     string `json:"path"`
-	Content  string `json:"content"`
-	Op       string `json:"op"`
-	Code     string `json:"code"`
-	Language string `json:"language"`
-	To       string `json:"to"`
-	Subject  string `json:"subject"`
-	Body     string `json:"body"`
-	Folder   string `json:"folder"`
+func (s *spliceOutput) resolvedAgentType() string {
+	if s.AgentType != "" {
+		return s.AgentType
+	}
+	return s.Skill
+}
+
+// buildDAG constructs a dag.Graph from the task's plan steps.
+func buildDAG(plan []taskstate.Step) (*dag.Graph, error) {
+	ids := make([]string, len(plan))
+	deps := make(map[string][]string, len(plan))
+	for i, s := range plan {
+		ids[i] = s.ID
+		if len(s.DependsOn) > 0 {
+			deps[s.ID] = s.DependsOn
+		}
+	}
+	return dag.New(ids, deps)
+}
+
+// stepIndex returns the index of a step ID in the plan, or -1 if not found.
+func stepIndex(plan []taskstate.Step, id string) int {
+	for i, s := range plan {
+		if s.ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // runTask is the main agent loop for a task. It runs in its own goroutine.
+// Execution order is determined by the dependency DAG: steps whose dependencies
+// are all satisfied run concurrently; splice-flagged steps may insert new steps
+// into the plan at runtime.
 func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 	log := o.logger.With("task_id", taskID)
 
@@ -50,59 +73,90 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 		return
 	}
 
-	i := 0
-	for i < len(state.Plan) {
-		if state.Plan[i].Status != taskstate.StepPending {
-			i++
-			continue
+	spliceCounter := 0
+
+	for {
+		g, err := buildDAG(state.Plan)
+		if err != nil {
+			log.Error("invalid plan DAG", "err", err)
+			o.failTask(ctx, taskID, fmt.Sprintf("invalid plan DAG: %v", err))
+			return
 		}
 
-		if group := state.Plan[i].Group; group != "" {
-			var indices []int
-			for j := i; j < len(state.Plan) && state.Plan[j].Group == group; j++ {
-				if state.Plan[j].Status == taskstate.StepPending {
-					indices = append(indices, j)
-				}
+		completed := make(map[string]bool)
+		for _, s := range state.Plan {
+			if s.Status == taskstate.StepCompleted {
+				completed[s.ID] = true
 			}
-
-			if err := o.runParallelSteps(ctx, state, indices); err != nil {
-				log.Error("parallel group failed", "group", group, "err", err)
-				o.failTask(ctx, taskID, fmt.Sprintf("parallel group %q failed: %v", group, err))
-				return
-			}
-
-			for i < len(state.Plan) && state.Plan[i].Group == group {
-				i++
-			}
-		} else {
-			stepAgentType := state.Plan[i].AgentType
-			if err := o.runStep(ctx, state, i); err != nil {
-				log.Error("step failed", "step_id", state.Plan[i].ID, "err", err)
-				o.failTask(ctx, taskID, fmt.Sprintf("step %s failed: %v", state.Plan[i].ID, err))
-				return
-			}
-			// After a router step completes, reload state (runStep stored the
-			// output) then validate and splice the skill step.
-			if stepAgentType == "router" {
-				state, err = o.store.Get(ctx, taskID)
-				if err != nil {
-					log.Error("failed to reload state for splice", "err", err)
-					o.failTask(ctx, taskID, "state reload failed")
-					return
-				}
-				if err := o.spliceRoutedStep(ctx, state, i); err != nil {
-					log.Warn("routing splice failed, continuing without skill step", "err", err)
-				}
-			}
-			i++
 		}
 
+		readyIDs := g.Ready(completed)
+		if len(readyIDs) == 0 {
+			break
+		}
+
+		readyIndices := make([]int, 0, len(readyIDs))
+		for _, id := range readyIDs {
+			idx := stepIndex(state.Plan, id)
+			if idx >= 0 {
+				readyIndices = append(readyIndices, idx)
+			}
+		}
+
+		if err := o.runParallelSteps(ctx, state, readyIndices); err != nil {
+			log.Error("step batch failed", "err", err)
+			o.failTask(ctx, taskID, fmt.Sprintf("step batch failed: %v", err))
+			return
+		}
+
+		// Reload state after the batch completes (runStep persists results).
 		state, err = o.store.Get(ctx, taskID)
 		if err != nil {
 			log.Error("failed to reload state", "err", err)
 			o.failTask(ctx, taskID, "state reload failed")
 			return
 		}
+
+		// Handle splices for any splice-flagged steps that just completed.
+		for _, id := range readyIDs {
+			idx := stepIndex(state.Plan, id)
+			if idx < 0 {
+				continue
+			}
+			step := &state.Plan[idx]
+			if step.Status != taskstate.StepCompleted {
+				continue
+			}
+			meta, metaErr := o.registry.Get(step.AgentType)
+			if metaErr != nil || !meta.Splice {
+				continue
+			}
+			spliceCounter++
+			if spliceErr := o.handleSplice(ctx, state, g, step, spliceCounter); spliceErr != nil {
+				log.Warn("splice failed, continuing without skill step", "step_id", step.ID, "err", spliceErr)
+			}
+		}
+
+		// Reload state after potential splices.
+		state, err = o.store.Get(ctx, taskID)
+		if err != nil {
+			log.Error("failed to reload state after splice", "err", err)
+			o.failTask(ctx, taskID, "state reload failed")
+			return
+		}
+	}
+
+	// Check for stuck tasks (pending steps with unmet dependencies due to failures).
+	allDone := true
+	for _, s := range state.Plan {
+		if s.Status == taskstate.StepPending {
+			allDone = false
+			break
+		}
+	}
+	if !allDone {
+		o.failTask(ctx, taskID, "task stuck: pending steps with unmet dependencies")
+		return
 	}
 
 	if err := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
@@ -151,9 +205,13 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 
 	now := time.Now().UTC()
 	if err := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
-		s.Plan[stepIdx].Status = taskstate.StepRunning
-		s.Plan[stepIdx].StartedAt = &now
-		s.CurrentStep = stepIdx
+		idx := stepIndex(s.Plan, step.ID)
+		if idx < 0 {
+			return fmt.Errorf("step %s not found in plan", step.ID)
+		}
+		s.Plan[idx].Status = taskstate.StepRunning
+		s.Plan[idx].StartedAt = &now
+		s.CurrentStep = idx
 		return nil
 	}); err != nil {
 		return fmt.Errorf("mark step running: %w", err)
@@ -165,13 +223,11 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		log.Error("audit write failed", "event", taskstate.EventStepStarted, "err", err)
 	}
 
-	// ── AGENT METADATA ───────────────────────────────────────────────────────
 	meta, err := o.registry.Get(step.AgentType)
 	if err != nil {
 		return fmt.Errorf("agent registry: %w", err)
 	}
 
-	// ── POLICY EVALUATION ────────────────────────────────────────────────────
 	policySource := "wasm-af:" + step.AgentType
 
 	result, err := o.evaluateStepPolicy(ctx, state, step, meta, stepIdx)
@@ -185,8 +241,12 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 			denyMsg = *result.DenyMessage
 		}
 		if err := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
-			s.Plan[stepIdx].Status = taskstate.StepDenied
-			s.Plan[stepIdx].Error = denyMsg
+			idx := stepIndex(s.Plan, step.ID)
+			if idx < 0 {
+				return nil
+			}
+			s.Plan[idx].Status = taskstate.StepDenied
+			s.Plan[idx].Error = denyMsg
 			return nil
 		}); err != nil {
 			log.Error("failed to mark step denied", "err", err)
@@ -209,7 +269,6 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		log.Error("audit write failed", "event", taskstate.EventPolicyPermit, "err", err)
 	}
 
-	// ── BUILD PLUGIN OPTS (defaults + policy overrides) ─────────────────────
 	opts := PluginOpts{
 		MaxMemPages:  o.pluginMaxMemoryPages,
 		MaxHTTPBytes: o.pluginMaxHTTPBytes,
@@ -235,16 +294,14 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		opts.AllowedPaths = result.AllowedPaths
 	}
 
-	// Resolve host functions: policy can override which ones are injected.
 	hostFnNames := meta.HostFunctions
 	if len(result.HostFunctions) > 0 {
 		hostFnNames = result.HostFunctions
 	}
 	opts.HostFunctions = o.hostFns.Resolve(hostFnNames, o)
 
-	// ── INVOKE AGENT ─────────────────────────────────────────────────────────
 	inputPayload := BuildPayload(meta, state, step)
-	inputContext := o.buildStepContext(state, stepIdx)
+	inputContext := o.buildStepContext(state, step.ID)
 
 	input := &TaskInput{
 		TaskID:  taskID,
@@ -260,8 +317,12 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 	output, err := o.invokeAgent(ctx, meta.WasmName, input, opts)
 	if err != nil {
 		if updateErr := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
-			s.Plan[stepIdx].Status = taskstate.StepFailed
-			s.Plan[stepIdx].Error = err.Error()
+			idx := stepIndex(s.Plan, step.ID)
+			if idx < 0 {
+				return nil
+			}
+			s.Plan[idx].Status = taskstate.StepFailed
+			s.Plan[idx].Error = err.Error()
 			return nil
 		}); updateErr != nil {
 			log.Error("failed to mark step failed", "err", updateErr)
@@ -281,8 +342,12 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 
 	fin := time.Now().UTC()
 	if err := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
-		s.Plan[stepIdx].Status = taskstate.StepCompleted
-		s.Plan[stepIdx].CompletedAt = &fin
+		idx := stepIndex(s.Plan, step.ID)
+		if idx < 0 {
+			return nil
+		}
+		s.Plan[idx].Status = taskstate.StepCompleted
+		s.Plan[idx].CompletedAt = &fin
 		s.Results[step.OutputKey] = output.Payload
 		return nil
 	}); err != nil {
@@ -327,10 +392,21 @@ func (o *Orchestrator) failTask(ctx context.Context, taskID, reason string) {
 	}
 }
 
-// buildStepContext assembles context from prior step outputs.
-// When multiple prior steps share the same context key (parallel fan-out),
-// their results are merged into a single JSON value.
-func (o *Orchestrator) buildStepContext(state *taskstate.TaskState, stepIdx int) []contextPair {
+// buildStepContext assembles context from ancestor step outputs (following the
+// dependency DAG). When multiple ancestors share the same context key (parallel
+// fan-out), their results are merged into a single JSON array.
+func (o *Orchestrator) buildStepContext(state *taskstate.TaskState, stepID string) []contextPair {
+	g, err := buildDAG(state.Plan)
+	if err != nil {
+		return nil
+	}
+
+	ancestorIDs := g.Ancestors(stepID)
+	ancestorSet := make(map[string]bool, len(ancestorIDs))
+	for _, id := range ancestorIDs {
+		ancestorSet[id] = true
+	}
+
 	type entry struct {
 		key    string
 		values []string
@@ -339,8 +415,10 @@ func (o *Orchestrator) buildStepContext(state *taskstate.TaskState, stepIdx int)
 	seen := make(map[string]int)
 	var entries []entry
 
-	for i := 0; i < stepIdx; i++ {
-		s := state.Plan[i]
+	for _, s := range state.Plan {
+		if !ancestorSet[s.ID] {
+			continue
+		}
 		v, ok := state.Results[s.OutputKey]
 		if !ok {
 			continue
@@ -365,9 +443,7 @@ func (o *Orchestrator) buildStepContext(state *taskstate.TaskState, stepIdx int)
 	return ctx
 }
 
-// mergeOutputs wraps multiple step outputs into a JSON array. The
-// orchestrator is format-agnostic; the consuming agent decides how
-// to interpret the array elements.
+// mergeOutputs wraps multiple step outputs into a JSON array.
 func mergeOutputs(outputs []string) string {
 	merged := make([]json.RawMessage, 0, len(outputs))
 	for _, raw := range outputs {
@@ -385,41 +461,38 @@ func (o *Orchestrator) contextKeyForAgent(agentType string) string {
 	return meta.ContextKey
 }
 
-// spliceRoutedStep reads the router output, validates the proposed skill
-// against OPA, and splices a concrete skill step into the plan immediately
-// after the router step. If the skill is "direct-answer" or policy denies it,
-// no step is added and the responder receives only prior context.
-func (o *Orchestrator) spliceRoutedStep(ctx context.Context, state *taskstate.TaskState, routerIdx int) error {
-	routerStep := state.Plan[routerIdx]
-	routerJSON, ok := state.Results[routerStep.OutputKey]
+// handleSplice reads a splice-flagged step's output, validates the proposed
+// agent type against OPA, and inserts a new step into the plan. Steps that
+// depended on the splicing step are rewired to depend on the new step.
+func (o *Orchestrator) handleSplice(ctx context.Context, state *taskstate.TaskState, g *dag.Graph, step *taskstate.Step, counter int) error {
+	outputJSON, ok := state.Results[step.OutputKey]
 	if !ok {
-		return fmt.Errorf("router output not found in results")
+		return fmt.Errorf("splice step output not found in results")
 	}
 
-	var route routerOutput
-	if err := json.Unmarshal([]byte(routerJSON), &route); err != nil {
-		return fmt.Errorf("parse router output: %w", err)
+	var splice spliceOutput
+	if err := json.Unmarshal([]byte(outputJSON), &splice); err != nil {
+		return fmt.Errorf("parse splice output: %w", err)
 	}
 
-	o.logger.Info("router decision", "skill", route.Skill, "task_id", state.TaskID)
+	agentType := splice.resolvedAgentType()
+	o.logger.Info("splice decision", "agent_type", agentType, "task_id", state.TaskID, "source_step", step.ID)
 
-	// direct-answer means no skill step needed.
-	if route.Skill == "" || route.Skill == "direct-answer" {
+	if agentType == "" || agentType == "direct-answer" {
 		return nil
 	}
 
 	taskID := state.TaskID
 
-	// Policy gate: evaluate the proposed skill splice (fail closed).
 	if o.policy == nil {
 		_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
 			TaskID:        taskID,
 			EventType:     taskstate.EventPolicyDeny,
 			PolicySource:  "wasm-af:router-splice",
 			PolicyDenyMsg: "no policy loaded; deny-all",
-			Message:       fmt.Sprintf("proposed skill %q denied: no policy loaded", route.Skill),
+			Message:       fmt.Sprintf("proposed agent %q denied: no policy loaded", agentType),
 		})
-		o.logger.Warn("router-splice denied: no policy loaded", "skill", route.Skill)
+		o.logger.Warn("splice denied: no policy loaded", "agent_type", agentType)
 		return nil
 	}
 
@@ -427,7 +500,7 @@ func (o *Orchestrator) spliceRoutedStep(ctx context.Context, state *taskstate.Ta
 		"step": map[string]any{
 			"agent_type": "router-splice",
 			"params": map[string]any{
-				"proposed_skill": route.Skill,
+				"proposed_skill": agentType,
 			},
 		},
 		"task": map[string]any{
@@ -437,7 +510,7 @@ func (o *Orchestrator) spliceRoutedStep(ctx context.Context, state *taskstate.Ta
 	}
 	result, err := o.policy.EvaluateStep(ctx, policyInput)
 	if err != nil {
-		return fmt.Errorf("router-splice policy: %w", err)
+		return fmt.Errorf("splice policy: %w", err)
 	}
 	if !result.Permitted {
 		denyMsg := "denied"
@@ -449,74 +522,51 @@ func (o *Orchestrator) spliceRoutedStep(ctx context.Context, state *taskstate.Ta
 			EventType:     taskstate.EventPolicyDeny,
 			PolicySource:  "wasm-af:router-splice",
 			PolicyDenyMsg: denyMsg,
-			Message:       fmt.Sprintf("proposed skill %q denied by policy", route.Skill),
+			Message:       fmt.Sprintf("proposed agent %q denied by policy", agentType),
 		})
-		o.logger.Warn("router-splice denied by policy", "skill", route.Skill, "deny", denyMsg)
-		return nil // not a task error — just skip the skill
+		o.logger.Warn("splice denied by policy", "agent_type", agentType, "deny", denyMsg)
+		return nil
 	}
 
-	// Build step params from the router's extracted fields.
-	params := make(map[string]string)
-	switch route.Skill {
-	case "web-search":
-		if route.Params.Query != "" {
-			params["query"] = route.Params.Query
-		}
-	case "shell":
-		if route.Params.Command != "" {
-			params["command"] = route.Params.Command
-		}
-	case "file-ops":
-		if route.Params.Op != "" {
-			params["op"] = route.Params.Op
-		}
-		if route.Params.Path != "" {
-			params["path"] = route.Params.Path
-		}
-		if route.Params.Content != "" {
-			params["content"] = route.Params.Content
-		}
-	case "sandbox-exec":
-		if route.Params.Code != "" {
-			params["code"] = route.Params.Code
-		}
-		if route.Params.Language != "" {
-			params["language"] = route.Params.Language
-		}
-	case "email-send":
-		if route.Params.To != "" {
-			params["to"] = route.Params.To
-		}
-		if route.Params.Subject != "" {
-			params["subject"] = route.Params.Subject
-		}
-		if route.Params.Body != "" {
-			params["body"] = route.Params.Body
-		}
-	case "email-read":
-		if route.Params.Folder != "" {
-			params["folder"] = route.Params.Folder
-		}
-	}
+	newStepID := fmt.Sprintf("%s-splice-%d", taskID, counter)
+	dependents := g.Children(step.ID)
 
-	skillStepID := fmt.Sprintf("%s-skill", taskID)
 	newStep := taskstate.Step{
-		ID:        skillStepID,
-		AgentType: route.Skill,
-		InputKey:  skillStepID + ".input",
-		OutputKey: skillStepID + ".output",
+		ID:        newStepID,
+		AgentType: agentType,
+		InputKey:  newStepID + ".input",
+		OutputKey: newStepID + ".output",
 		Status:    taskstate.StepPending,
-		Params:    params,
+		DependsOn: []string{step.ID},
+		Params:    splice.Params,
 	}
 
-	// Splice into the plan via CAS update.
 	return o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
-		insertAt := routerIdx + 1
-		newPlan := make([]taskstate.Step, 0, len(s.Plan)+1)
-		newPlan = append(newPlan, s.Plan[:insertAt]...)
-		newPlan = append(newPlan, newStep)
-		newPlan = append(newPlan, s.Plan[insertAt:]...)
-		s.Plan = newPlan
+		// Append the new step to the plan.
+		s.Plan = append(s.Plan, newStep)
+
+		// Rewire: steps that depended on the splicing step now depend on
+		// the new step instead.
+		for i := range s.Plan {
+			for _, depID := range dependents {
+				if s.Plan[i].ID == depID {
+					s.Plan[i].DependsOn = replaceDep(s.Plan[i].DependsOn, step.ID, newStepID)
+				}
+			}
+		}
 		return nil
 	})
+}
+
+// replaceDep replaces one dependency ID with another in a DependsOn list.
+func replaceDep(deps []string, old, new string) []string {
+	out := make([]string, len(deps))
+	copy(out, deps)
+	for i, d := range out {
+		if d == old {
+			out[i] = new
+			return out
+		}
+	}
+	return out
 }

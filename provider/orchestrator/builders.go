@@ -53,20 +53,23 @@ func stepID(taskID string, n int) string {
 type ResearchBuilder struct{}
 
 func (ResearchBuilder) BuildPlan(taskID string, _ map[string]string, _ *AgentRegistry, _ *Orchestrator) ([]taskstate.Step, error) {
+	searchID := stepID(taskID, 1)
+	sumID := stepID(taskID, 2)
 	return []taskstate.Step{
 		{
-			ID:        stepID(taskID, 1),
+			ID:        searchID,
 			AgentType: "web-search",
-			InputKey:  stepID(taskID, 1) + ".input",
-			OutputKey: stepID(taskID, 1) + ".output",
+			InputKey:  searchID + ".input",
+			OutputKey: searchID + ".output",
 			Status:    taskstate.StepPending,
 		},
 		{
-			ID:        stepID(taskID, 2),
+			ID:        sumID,
 			AgentType: "summarizer",
-			InputKey:  stepID(taskID, 2) + ".input",
-			OutputKey: stepID(taskID, 2) + ".output",
+			InputKey:  sumID + ".input",
+			OutputKey: sumID + ".output",
 			Status:    taskstate.StepPending,
+			DependsOn: []string{searchID},
 		},
 	}, nil
 }
@@ -93,26 +96,29 @@ func (FanOutSummarizerBuilder) BuildPlan(taskID string, ctx map[string]string, _
 	}
 
 	steps := make([]taskstate.Step, 0, len(urls)+1)
+	fetchIDs := make([]string, 0, len(urls))
 	for i, u := range urls {
 		n := i + 1
+		id := stepID(taskID, n)
+		fetchIDs = append(fetchIDs, id)
 		steps = append(steps, taskstate.Step{
-			ID:        stepID(taskID, n),
+			ID:        id,
 			AgentType: "url-fetch",
-			InputKey:  stepID(taskID, n) + ".input",
-			OutputKey: stepID(taskID, n) + ".output",
+			InputKey:  id + ".input",
+			OutputKey: id + ".output",
 			Status:    taskstate.StepPending,
-			Group:     "fetch",
 			Params:    map[string]string{"url": u},
 		})
 	}
 
-	sumN := len(urls) + 1
+	sumID := stepID(taskID, len(urls)+1)
 	steps = append(steps, taskstate.Step{
-		ID:        stepID(taskID, sumN),
+		ID:        sumID,
 		AgentType: "summarizer",
-		InputKey:  stepID(taskID, sumN) + ".input",
-		OutputKey: stepID(taskID, sumN) + ".output",
+		InputKey:  sumID + ".input",
+		OutputKey: sumID + ".output",
 		Status:    taskstate.StepPending,
+		DependsOn: fetchIDs,
 	})
 
 	return steps, nil
@@ -153,7 +159,7 @@ func (GenericPlanBuilder) BuildPlan(taskID string, ctx map[string]string, _ *Age
 	}
 	var stepDefs []struct {
 		AgentType string            `json:"agent_type"`
-		Group     string            `json:"group,omitempty"`
+		DependsOn []string          `json:"depends_on,omitempty"`
 		Params    map[string]string `json:"params,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(raw), &stepDefs); err != nil {
@@ -162,6 +168,9 @@ func (GenericPlanBuilder) BuildPlan(taskID string, ctx map[string]string, _ *Age
 	if len(stepDefs) == 0 {
 		return nil, fmt.Errorf("generic plan: steps array is empty")
 	}
+
+	// Build an ID map so depends_on can reference 1-based step indices ("step-N")
+	// or the auto-generated full IDs.
 	steps := make([]taskstate.Step, len(stepDefs))
 	for i, sd := range stepDefs {
 		n := i + 1
@@ -171,7 +180,7 @@ func (GenericPlanBuilder) BuildPlan(taskID string, ctx map[string]string, _ *Age
 			InputKey:  stepID(taskID, n) + ".input",
 			OutputKey: stepID(taskID, n) + ".output",
 			Status:    taskstate.StepPending,
-			Group:     sd.Group,
+			DependsOn: sd.DependsOn,
 			Params:    sd.Params,
 		}
 	}

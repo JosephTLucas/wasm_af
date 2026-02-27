@@ -36,12 +36,13 @@ type Step struct {
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	CompletedAt *time.Time `json:"completed_at,omitempty"`
 
-	// Group tags steps for parallel execution. Steps with the same non-empty
-	// Group value that are contiguous in the plan are started concurrently.
-	Group string `json:"group,omitempty"`
+	// DependsOn lists step IDs that must complete before this step can run.
+	// Steps with no dependencies (empty/nil) are roots and run immediately.
+	// The scheduler discovers parallelism from the dependency graph: steps
+	// whose dependencies are all satisfied run concurrently.
+	DependsOn []string `json:"depends_on,omitempty"`
 
-	// Params carries step-specific parameters that buildStepPayload reads.
-	// For url-fetch steps this contains {"url": "https://..."}.
+	// Params carries step-specific parameters that BuildPayload reads.
 	Params map[string]string `json:"params,omitempty"`
 }
 

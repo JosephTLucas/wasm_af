@@ -426,7 +426,7 @@ func TestEnrichParams_NoEnrichments(t *testing.T) {
 func TestGenericPlanBuilder(t *testing.T) {
 	b := GenericPlanBuilder{}
 	ctx := map[string]string{
-		"steps": `[{"agent_type":"my-agent","params":{"key":"val"}},{"agent_type":"other","group":"g1"}]`,
+		"steps": `[{"agent_type":"my-agent","params":{"key":"val"}},{"agent_type":"other","depends_on":["task-1-step-1"]}]`,
 	}
 	steps, err := b.BuildPlan("task-1", ctx, nil, nil)
 	if err != nil {
@@ -441,8 +441,8 @@ func TestGenericPlanBuilder(t *testing.T) {
 	if steps[0].Params["key"] != "val" {
 		t.Errorf("step 0 params=%v", steps[0].Params)
 	}
-	if steps[1].Group != "g1" {
-		t.Errorf("step 1 group=%q", steps[1].Group)
+	if len(steps[1].DependsOn) != 1 || steps[1].DependsOn[0] != "task-1-step-1" {
+		t.Errorf("step 1 depends_on=%v", steps[1].DependsOn)
 	}
 }
 

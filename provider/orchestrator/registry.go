@@ -28,6 +28,7 @@ type AgentMeta struct {
 	HostFunctions []string          `json:"host_functions"`
 	PayloadFields map[string]any    `json:"payload_fields"`
 	Enrichments   []ParamEnrichment `json:"enrichments,omitempty"`
+	Splice        bool              `json:"splice,omitempty"`
 }
 
 // AgentRegistry holds the set of known agent types, loaded from a JSON config.

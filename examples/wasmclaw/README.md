@@ -58,21 +58,21 @@ POST /message { message: "calculate fibonacci of 10" }
   ├── webhook-gateway → POST /tasks { type: "chat", query: "..." }
   ├── submit.rego: allow (task_type == "chat")
   │
-  ├── ChatBuilder → plan:
-  │     memory(get) → router → [splice slot] → responder → memory(append)
+  ├── ChatBuilder → plan (DAG):
+  │     memory(get) → router → responder → memory(append)
   │
   ├── runStep(memory): kv_get conversation history
   ├── runStep(router): LLM → {"skill":"sandbox-exec","params":{...}}
   │
-  ├── spliceRoutedStep:
+  ├── handleSplice (router has "splice": true):
   │     policy.rego: router-splice allow (sandbox-exec ∈ allowed_skills)
-  │     → insert sandbox-exec step into plan
+  │     → insert sandbox-exec, rewire responder to depend on it
   │
   ├── runStep(sandbox-exec):
   │     policy.rego: allow (sandbox_exec_enabled, python ∈ allowed_languages)
   │     → Wazero instance → python.wasm → stdout: "55"
   │
-  ├── runStep(responder): LLM summarizes skill output
+  ├── runStep(responder): LLM summarizes skill output (ancestors: memory, router, sandbox-exec)
   └── runStep(memory): kv_put updated history
 ```
 

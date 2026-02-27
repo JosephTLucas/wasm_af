@@ -15,28 +15,34 @@ import "github.com/jolucas/wasm-af/pkg/taskstate"
 type EmailReplyBuilder struct{}
 
 func (EmailReplyBuilder) BuildPlan(taskID string, ctx map[string]string, _ *AgentRegistry, _ *Orchestrator) ([]taskstate.Step, error) {
+	readID := stepID(taskID, 1)
+	responderID := stepID(taskID, 2)
+	sendID := stepID(taskID, 3)
+
 	return []taskstate.Step{
 		{
-			ID:        stepID(taskID, 1),
+			ID:        readID,
 			AgentType: "email-read",
-			InputKey:  stepID(taskID, 1) + ".input",
-			OutputKey: stepID(taskID, 1) + ".output",
+			InputKey:  readID + ".input",
+			OutputKey: readID + ".output",
 			Status:    taskstate.StepPending,
 			Params:    map[string]string{"folder": "inbox"},
 		},
 		{
-			ID:        stepID(taskID, 2),
+			ID:        responderID,
 			AgentType: "responder",
-			InputKey:  stepID(taskID, 2) + ".input",
-			OutputKey: stepID(taskID, 2) + ".output",
+			InputKey:  responderID + ".input",
+			OutputKey: responderID + ".output",
 			Status:    taskstate.StepPending,
+			DependsOn: []string{readID},
 		},
 		{
-			ID:        stepID(taskID, 3),
+			ID:        sendID,
 			AgentType: "email-send",
-			InputKey:  stepID(taskID, 3) + ".input",
-			OutputKey: stepID(taskID, 3) + ".output",
+			InputKey:  sendID + ".input",
+			OutputKey: sendID + ".output",
 			Status:    taskstate.StepPending,
+			DependsOn: []string{responderID},
 			Params: map[string]string{
 				"to":      ctx["reply_to"],
 				"subject": ctx["reply_subject"],

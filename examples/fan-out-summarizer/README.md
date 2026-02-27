@@ -16,16 +16,18 @@ Prerequisites: Rust, Go 1.25+, jq, `nats-server` (or `wash`). Optional: `nats` C
 ```
 POST /tasks { type: "fan-out-summarizer", urls: "A,B,C" }
   │
-  ├── buildPlan()  →  [url-fetch(A), url-fetch(B), url-fetch(C)] + [summarizer]
+  ├── buildPlan():
+  │     url-fetch(A)  ──┐
+  │     url-fetch(B)  ──┼── summarizer(depends_on: [A, B, C])
+  │     url-fetch(C)  ──┘
   │
-  ├── runParallelSteps()  (group: "fetch")
+  ├── DAG ready-set → all fetches run in parallel (no dependencies):
   │     ├── goroutine: policy → NewPlugin(hosts:[A]) → Call → Close
   │     ├── goroutine: policy → NewPlugin(hosts:[B]) → Call → Close
   │     └── goroutine: policy → NewPlugin(hosts:[C]) → Call → Close
   │
-  ├── merge outputs → single "web_search_results" context entry
-  │
-  └── runStep(summarizer): policy → NewPlugin(+llm_complete) → Call → Close
+  └── DAG ready-set → summarizer (all deps met):
+        policy → NewPlugin(+llm_complete) → Call → Close
 ```
 
 Each url-fetch plugin's `allowed_hosts` is set to exactly one domain. The summarizer gets `llm_complete` but no HTTP capability. These are manifest-level constraints — not application checks.
