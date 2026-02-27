@@ -1,7 +1,7 @@
 .PHONY: demo build pull-model clean help
 
 ROOT    := $(shell cd ../.. && pwd)
-MODEL   ?= qwen3:1.7b
+MODEL   ?= gemma3:270m
 
 ##@ Demo
 
@@ -13,7 +13,7 @@ demo: pull-model build ## Pull model, build everything, run the prompt injection
 pull-model: ## Ensure the Ollama model is pulled (does nothing if already present)
 	@command -v ollama >/dev/null 2>&1 || \
 		(echo "Error: ollama not installed. Get it at https://ollama.com" && exit 1)
-	@ollama list 2>/dev/null | grep -q "^$(MODEL)" || \
+	@ollama show "$(MODEL)" >/dev/null 2>&1 || \
 		(echo "Pulling $(MODEL) (this may take a few minutes)..." && ollama pull "$(MODEL)")
 
 build: ## Build the Go orchestrator and Rust WASM plugins

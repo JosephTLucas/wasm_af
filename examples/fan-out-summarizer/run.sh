@@ -38,6 +38,13 @@ trap cleanup EXIT
 
 die() { echo "  ERROR: $1" >&2; exit 1; }
 
+extract_host() {
+    echo "$1" \
+        | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##' \
+        | sed -E 's#/.*$##' \
+        | sed -E 's#:.*$##'
+}
+
 echo ""
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║          WASM_AF — Fan-Out Summarizer Demo          ║"
@@ -109,6 +116,14 @@ if ! curl -sf http://localhost:8080/healthz > /dev/null 2>&1; then
     die "Orchestrator failed to start."
 fi
 echo "        Orchestrator running (PID $ORCH_PID)"
+
+# Seed the NATS KV allowed-fetch-domains so that a stale value from a previous
+# example run (e.g. prompt-injection) does not override this example's data.json.
+if command -v nats >/dev/null 2>&1; then
+    nats kv put wasm-af-config allowed-fetch-domains \
+        "webassembly.org,wasmcloud.com,bytecodealliance.org" > /dev/null 2>&1
+    sleep 1
+fi
 echo ""
 
 # ── 4. Demo ───────────────────────────────────────────────────────────────────
@@ -189,7 +204,7 @@ echo ""
 NUM_FETCHES=$(echo "$STATE" | jq '[.plan[] | select(.agent_type == "url-fetch")] | length')
 echo "$STATE" | jq -r '
     .plan[] | select(.agent_type == "url-fetch") |
-    "    url-fetch   HTTP \u2192 \(.allowed_hosts) only     LLM host fn: absent     [\(.status)]"'
+    "    url-fetch   HTTP \u2192 policy-scoped per URL (\(.params.url // "n/a"))     LLM host fn: absent     [\(.status)]"'
 echo "$STATE" | jq -r '
     .plan[] | select(.agent_type == "summarizer") |
     "    summarizer  HTTP \u2192 (none)                  LLM host fn: injected   [\(.status)]"'
@@ -212,21 +227,24 @@ echo "  Proof: create a url-fetch instance with allowed_hosts=[webassembly.org]"
 echo "  and ask it to fetch https://wasmcloud.com/."
 echo ""
 
-# Pick a domain for the cross-request that is in the server allow list
-# (so the pre-flight check passes and we prove the Extism layer, not the
-# server-side allowlist layer).
-FIRST_DOMAIN=$(echo "$STATE" | jq -r '.plan[] | select(.agent_type == "url-fetch") | .allowed_hosts' | head -1)
-SECOND_DOMAIN=$(echo "$STATE" | jq -r '.plan[] | select(.agent_type == "url-fetch") | .allowed_hosts' | sed -n '2p')
-
-if [ -z "$SECOND_DOMAIN" ]; then
+if [ "${#URL_ARRAY[@]}" -lt 2 ]; then
     echo "  (Only one url-fetch step in the plan — need at least two domains to demonstrate.)"
     echo "  Run with URLS containing 2+ domains to see this section."
 else
+    FIRST_URL="$(echo "${URL_ARRAY[0]}" | xargs)"
+    SECOND_URL="$(echo "${URL_ARRAY[1]}" | xargs)"
+    FIRST_DOMAIN="$(extract_host "$FIRST_URL")"
+    SECOND_DOMAIN="$(extract_host "$SECOND_URL")"
+    if [ -z "$FIRST_DOMAIN" ] || [ -z "$SECOND_DOMAIN" ]; then
+        echo "  Unable to extract domains from URLS."
+        echo "  URLS must include absolute URLs like https://example.com/path"
+        echo ""
+    else
     PROBE_ID=$(curl -sf -X POST http://localhost:8080/tasks \
         -H "Content-Type: application/json" \
         -d "$(jq -n \
             --arg restricted_to "$FIRST_DOMAIN" \
-            --arg fetch_url "https://${SECOND_DOMAIN}/" \
+            --arg fetch_url "$SECOND_URL" \
             '{type:"isolation-test", query:"cross-instance isolation probe",
               context:{restricted_to:$restricted_to, fetch_url:$fetch_url}}')" \
         | jq -r '.task_id')
@@ -243,15 +261,20 @@ else
         STEP_STATUS=$(echo "$PROBE_STATE" | jq -r '.plan[0].status // "unknown"')
         STEP_ERR=$(echo "$PROBE_STATE" | jq -r '.plan[0].error // ""')
         echo "    instance allowed_hosts: [$FIRST_DOMAIN]"
-        echo "    attempted fetch:        https://${SECOND_DOMAIN}/"
+        echo "    attempted fetch:        $SECOND_URL"
         echo "    step result:            $STEP_STATUS"
         [ -n "$STEP_ERR" ] && echo "    error:                  $(echo "$STEP_ERR" | head -c 120)"
         echo ""
-        if [ "$STEP_STATUS" = "failed" ]; then
+        STEP_ERR_LC=$(echo "$STEP_ERR" | tr '[:upper:]' '[:lower:]')
+        if [ "$STEP_STATUS" = "failed" ] && ! echo "$STEP_ERR_LC" | grep -q "no rule permits"; then
             echo "  The plugin ran. The HTTP call was blocked by wazero — not by Go code."
             echo "  $SECOND_DOMAIN is in the server allow list, so the pre-flight check passed."
             echo "  The sandbox enforced the per-instance boundary."
+        elif [ "$STEP_STATUS" = "denied" ] || echo "$STEP_ERR_LC" | grep -q "no rule permits"; then
+            echo "  This probe was denied by OPA policy before plugin instantiation."
+            echo "  To prove sandbox isolation, use URLS whose domains are in data.config.allowed_domains."
         fi
+    fi
     fi
 fi
 echo ""

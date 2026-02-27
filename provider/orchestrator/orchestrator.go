@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"path"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	extism "github.com/extism/go-sdk"
@@ -82,9 +85,61 @@ type PluginOpts struct {
 	AllowedPaths  map[string]string
 }
 
+var wasmNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
 // wasmPath returns the absolute path to a compiled .wasm plugin.
-func (o *Orchestrator) wasmPath(name string) string {
-	return filepath.Join(o.wasmDir, name+".wasm")
+func (o *Orchestrator) wasmPath(name string) (string, error) {
+	if !wasmNameRE.MatchString(name) {
+		return "", fmt.Errorf("invalid wasm name %q", name)
+	}
+
+	baseDir, err := filepath.Abs(o.wasmDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve wasm dir: %w", err)
+	}
+	wasmPath := filepath.Join(baseDir, name+".wasm")
+	rel, err := filepath.Rel(baseDir, wasmPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve relative wasm path: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("wasm path escapes configured wasm dir")
+	}
+	return wasmPath, nil
+}
+
+// sanitizeAllowedPaths validates and normalizes policy-supplied host->guest path
+// mappings before they are passed to Extism.
+func sanitizeAllowedPaths(paths map[string]string) (map[string]string, error) {
+	cleaned := make(map[string]string, len(paths))
+	for hostPath, guestPath := range paths {
+		if hostPath == "" || guestPath == "" {
+			return nil, fmt.Errorf("allowed_paths entries must have non-empty host and guest paths")
+		}
+		if !filepath.IsAbs(hostPath) {
+			return nil, fmt.Errorf("host path %q must be absolute", hostPath)
+		}
+
+		hostAbs, err := filepath.Abs(hostPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve host path %q: %w", hostPath, err)
+		}
+		hostClean := filepath.Clean(hostAbs)
+		if !filepath.IsAbs(hostClean) {
+			return nil, fmt.Errorf("host path %q must be absolute", hostPath)
+		}
+
+		guestClean := path.Clean(guestPath)
+		if !strings.HasPrefix(guestPath, "/") {
+			return nil, fmt.Errorf("guest path %q must be absolute", guestPath)
+		}
+		if guestClean == "/" {
+			return nil, fmt.Errorf("guest path %q cannot be root", guestPath)
+		}
+
+		cleaned[hostClean] = guestClean
+	}
+	return cleaned, nil
 }
 
 // invokeAgent creates an Extism plugin from the given WASM binary, calls
@@ -97,9 +152,14 @@ func (o *Orchestrator) invokeAgent(
 	input *TaskInput,
 	opts PluginOpts,
 ) (*TaskOutput, error) {
+	wasmPath, err := o.wasmPath(wasmName)
+	if err != nil {
+		return nil, fmt.Errorf("resolve wasm path for %s: %w", wasmName, err)
+	}
+
 	manifest := extism.Manifest{
 		Wasm: []extism.Wasm{
-			extism.WasmFile{Path: o.wasmPath(wasmName)},
+			extism.WasmFile{Path: wasmPath},
 		},
 		Memory: &extism.ManifestMemory{
 			MaxPages:             opts.MaxMemPages,
@@ -113,7 +173,11 @@ func (o *Orchestrator) invokeAgent(
 		manifest.Config = opts.Config
 	}
 	if len(opts.AllowedPaths) > 0 {
-		manifest.AllowedPaths = opts.AllowedPaths
+		allowedPaths, err := sanitizeAllowedPaths(opts.AllowedPaths)
+		if err != nil {
+			return nil, fmt.Errorf("invalid allowed_paths: %w", err)
+		}
+		manifest.AllowedPaths = allowedPaths
 	}
 
 	config := extism.PluginConfig{

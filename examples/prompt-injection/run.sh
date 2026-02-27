@@ -16,7 +16,7 @@ cd "$ROOT"
 
 [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
 
-MODEL="${MODEL:-qwen3:1.7b}"
+MODEL="${MODEL:-gemma3:270m}"
 PAGE_PORT="${PAGE_PORT:-8765}"
 PAGE_URL="http://localhost:${PAGE_PORT}/malicious_page.html"
 EXAMPLE_DIR="$ROOT/examples/prompt-injection"
@@ -65,7 +65,7 @@ echo ""
 echo "  [2/5] Checking Ollama ($MODEL)..."
 
 command -v ollama >/dev/null 2>&1 || die "ollama not found. Install from https://ollama.com"
-ollama list 2>/dev/null | grep -q "^$MODEL" || die "$MODEL not pulled. Run: make pull-model"
+ollama show "$MODEL" >/dev/null 2>&1 || die "$MODEL not pulled. Run: make pull-model"
 
 if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
     echo "        Starting ollama serve..."
@@ -147,6 +147,13 @@ if ! curl -sf http://localhost:8080/healthz >/dev/null 2>&1; then
     die "Orchestrator failed to start."
 fi
 echo "        Orchestrator running (LLM: $MODEL via Ollama)"
+
+# Seed the NATS KV allowed-fetch-domains so that a stale value from a previous
+# example run (e.g. fan-out-summarizer) does not override this example's data.json.
+if command -v nats >/dev/null 2>&1; then
+    nats kv put wasm-af-config allowed-fetch-domains "localhost" > /dev/null 2>&1
+    sleep 1
+fi
 echo ""
 
 # ── 5. The attack ─────────────────────────────────────────────────────────────
@@ -286,9 +293,10 @@ echo "  2. The LLM API key was never in the WASM sandbox."
 echo ""
 echo "     The Ollama endpoint is unauthenticated, so there is no API key at all."
 echo "     If there were one, it would live in a Go closure inside llm.go:"
-echo "       realLLM(req, o.llmBaseURL, o.llmAPIKey, o.llmModel)"
-echo "     It is passed as a Go string to the HTTP client — never serialized"
-echo "     into the TaskInput struct, never written to WASM memory."
+echo "       realLLM(ctx, req, baseURL, apiKey, model)"
+echo "     These are closure-captured variables — not Orchestrator struct fields."
+echo "     Passed as Go strings to the HTTP client, never serialized into the"
+echo "     TaskInput struct, never written to WASM memory."
 echo "     The summarizer's full input was: the fetched HTML + the query string."
 echo "     There were no credentials to find."
 echo ""
