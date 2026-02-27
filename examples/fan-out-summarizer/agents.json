@@ -4,7 +4,10 @@
     "capability": "http",
     "context_key": "web_search_results",
     "host_functions": [],
-    "payload_fields": { "url": "step.params.url" }
+    "payload_fields": { "url": "step.params.url" },
+    "enrichments": [
+      { "source": "url", "target": "domain", "transform": "domain" }
+    ]
   },
   "web-search": {
     "wasm_name": "web_search",

@@ -10,15 +10,25 @@ import (
 	"github.com/jolucas/wasm-af/pkg/taskstate"
 )
 
+// ParamEnrichment declares a derived parameter computed from an existing
+// step param. This moves agent-specific knowledge (e.g. "extract domain
+// from URL") out of the orchestrator Go code and into the agent registry JSON.
+type ParamEnrichment struct {
+	Source    string `json:"source"`    // param name to read from
+	Target    string `json:"target"`    // enriched param name to write
+	Transform string `json:"transform"` // transform to apply: "domain"
+}
+
 // AgentMeta describes a single agent type's metadata: how to load it,
-// what capability it requires, what host functions it needs, and how
-// to build its input payload.
+// what capability it requires, what host functions it needs, how to
+// build its input payload, and what param enrichments to apply.
 type AgentMeta struct {
-	WasmName      string         `json:"wasm_name"`
-	Capability    string         `json:"capability"`
-	ContextKey    string         `json:"context_key"`
-	HostFunctions []string       `json:"host_functions"`
-	PayloadFields map[string]any `json:"payload_fields"`
+	WasmName      string            `json:"wasm_name"`
+	Capability    string            `json:"capability"`
+	ContextKey    string            `json:"context_key"`
+	HostFunctions []string          `json:"host_functions"`
+	PayloadFields map[string]any    `json:"payload_fields"`
+	Enrichments   []ParamEnrichment `json:"enrichments,omitempty"`
 }
 
 // AgentRegistry holds the set of known agent types, loaded from a JSON config.
@@ -62,16 +72,6 @@ func (r *AgentRegistry) Get(agentType string) (*AgentMeta, error) {
 		return nil, fmt.Errorf("unknown agent type %q (not in agent registry)", agentType)
 	}
 	return meta, nil
-}
-
-// HasHostFunction reports whether the agent declares the given host function.
-func (m *AgentMeta) HasHostFunction(name string) bool {
-	for _, fn := range m.HostFunctions {
-		if fn == name {
-			return true
-		}
-	}
-	return false
 }
 
 // BuildPayload constructs the JSON payload string for a step, using the

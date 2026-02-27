@@ -1,8 +1,8 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/jolucas/wasm-af/pkg/taskstate"
@@ -42,6 +42,7 @@ func RegisterDefaultBuilders(r *PlanBuilderRegistry) {
 	r.Register("research", ResearchBuilder{})
 	r.Register("fan-out-summarizer", FanOutSummarizerBuilder{})
 	r.Register("isolation-test", IsolationTestBuilder{})
+	r.Register("generic", GenericPlanBuilder{})
 }
 
 func stepID(taskID string, n int) string {
@@ -140,10 +141,39 @@ func (IsolationTestBuilder) BuildPlan(taskID string, ctx map[string]string, _ *A
 	return []taskstate.Step{step}, nil
 }
 
-func extractDomain(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Host == "" {
-		return rawURL
+// GenericPlanBuilder constructs a plan from a JSON array of step definitions
+// passed in the task submission context under the "steps" key. This allows
+// arbitrary workflows to be submitted without writing Go code.
+type GenericPlanBuilder struct{}
+
+func (GenericPlanBuilder) BuildPlan(taskID string, ctx map[string]string, _ *AgentRegistry, _ *Orchestrator) ([]taskstate.Step, error) {
+	raw, ok := ctx["steps"]
+	if !ok {
+		return nil, fmt.Errorf("generic plan requires a 'steps' key in context (JSON array)")
 	}
-	return u.Hostname()
+	var stepDefs []struct {
+		AgentType string            `json:"agent_type"`
+		Group     string            `json:"group,omitempty"`
+		Params    map[string]string `json:"params,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(raw), &stepDefs); err != nil {
+		return nil, fmt.Errorf("parse steps: %w", err)
+	}
+	if len(stepDefs) == 0 {
+		return nil, fmt.Errorf("generic plan: steps array is empty")
+	}
+	steps := make([]taskstate.Step, len(stepDefs))
+	for i, sd := range stepDefs {
+		n := i + 1
+		steps[i] = taskstate.Step{
+			ID:        stepID(taskID, n),
+			AgentType: sd.AgentType,
+			InputKey:  stepID(taskID, n) + ".input",
+			OutputKey: stepID(taskID, n) + ".output",
+			Status:    taskstate.StepPending,
+			Group:     sd.Group,
+			Params:    sd.Params,
+		}
+	}
+	return steps, nil
 }

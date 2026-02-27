@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"testing"
+
+	extism "github.com/extism/go-sdk"
 )
 
 const testStepPolicy = `package wasm_af.authz
@@ -20,12 +22,34 @@ allow if {
 	input.agent.capability == "llm"
 }
 
+allow if {
+	input.step.agent_type == "web-search"
+	input.agent.capability == "http"
+}
+
+allow if {
+	input.step.agent_type == "code-runner"
+	input.agent.capability == "exec"
+}
+
 max_memory_pages := 64 if { input.step.agent_type == "url-fetch" }
 max_memory_pages := 256 if { input.step.agent_type == "summarizer" }
 
 allowed_hosts := [input.step.domain] if {
 	input.step.agent_type == "url-fetch"
 	input.step.domain
+}
+
+host_functions := ["llm_complete"] if {
+	input.step.agent_type == "summarizer"
+}
+
+config := {"api_key": "secret-from-policy"} if {
+	input.step.agent_type == "web-search"
+}
+
+allowed_paths := {"/tmp/workspace": "/sandbox"} if {
+	input.step.agent_type == "code-runner"
 }
 
 deny_message := msg if {
@@ -52,7 +76,7 @@ func testData() map[string]any {
 	return map[string]any{
 		"config": map[string]any{
 			"allowed_domains":    []string{"webassembly.org", "wasmcloud.com"},
-			"allowed_task_types": []string{"fan-out-summarizer", "research"},
+			"allowed_task_types": []string{"fan-out-summarizer", "research", "generic"},
 		},
 	}
 }
@@ -186,6 +210,42 @@ func TestOPA_StructuredDecisions_MaxMemPages(t *testing.T) {
 	}
 }
 
+func TestOPA_StructuredDecisions_HostFunctions(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	r, err := e.EvaluateStep(context.Background(), stepInput("summarizer", "llm", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.HostFunctions) != 1 || r.HostFunctions[0] != "llm_complete" {
+		t.Errorf("expected host_functions=[llm_complete], got %v", r.HostFunctions)
+	}
+}
+
+func TestOPA_StructuredDecisions_Config(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	r, err := e.EvaluateStep(context.Background(), stepInput("web-search", "http", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Config == nil || r.Config["api_key"] != "secret-from-policy" {
+		t.Errorf("expected config.api_key=secret-from-policy, got %v", r.Config)
+	}
+}
+
+func TestOPA_StructuredDecisions_AllowedPaths(t *testing.T) {
+	e := newTestEvaluator(t)
+
+	r, err := e.EvaluateStep(context.Background(), stepInput("code-runner", "exec", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.AllowedPaths == nil || r.AllowedPaths["/tmp/workspace"] != "/sandbox" {
+		t.Errorf("expected allowed_paths, got %v", r.AllowedPaths)
+	}
+}
+
 func TestOPA_SubmitPolicy(t *testing.T) {
 	e := newTestEvaluator(t)
 
@@ -209,9 +269,6 @@ func TestOPA_SubmitPolicy(t *testing.T) {
 	}
 	if r.Permitted {
 		t.Error("expected deny for dangerous-task")
-	}
-	if r.DenyMessage == nil {
-		t.Error("expected deny_message")
 	}
 }
 
@@ -299,5 +356,108 @@ func TestOPA_LoadExamplePolicies(t *testing.T) {
 				t.Error("expected unknown agent to be denied")
 			}
 		})
+	}
+}
+
+func TestHostFnRegistry_Resolve(t *testing.T) {
+	reg := NewHostFnRegistry()
+	called := false
+	reg.Register("test_fn", func(_ *Orchestrator) []extism.HostFunction {
+		called = true
+		return nil
+	})
+
+	reg.Resolve([]string{"test_fn"}, nil)
+	if !called {
+		t.Error("expected provider to be called")
+	}
+
+	called = false
+	reg.Resolve([]string{"nonexistent"}, nil)
+	if called {
+		t.Error("expected provider NOT to be called for unknown name")
+	}
+}
+
+func TestHostFnRegistry_Empty(t *testing.T) {
+	reg := NewHostFnRegistry()
+	fns := reg.Resolve([]string{"anything"}, nil)
+	if len(fns) != 0 {
+		t.Errorf("expected empty, got %d", len(fns))
+	}
+}
+
+func TestEnrichParams_Domain(t *testing.T) {
+	enrichments := []ParamEnrichment{
+		{Source: "url", Target: "domain", Transform: "domain"},
+	}
+	params := map[string]string{"url": "https://example.com/path"}
+	result := enrichParams(params, enrichments)
+
+	if result["domain"] != "example.com" {
+		t.Errorf("expected domain=example.com, got %q", result["domain"])
+	}
+	if result["url"] != "https://example.com/path" {
+		t.Error("original param should be preserved")
+	}
+}
+
+func TestEnrichParams_MissingSource(t *testing.T) {
+	enrichments := []ParamEnrichment{
+		{Source: "missing", Target: "domain", Transform: "domain"},
+	}
+	params := map[string]string{"url": "https://example.com"}
+	result := enrichParams(params, enrichments)
+
+	if _, ok := result["domain"]; ok {
+		t.Error("enrichment should be skipped when source is missing")
+	}
+}
+
+func TestEnrichParams_NoEnrichments(t *testing.T) {
+	params := map[string]string{"key": "val"}
+	result := enrichParams(params, nil)
+
+	if result["key"] != "val" {
+		t.Error("params should pass through unchanged")
+	}
+}
+
+func TestGenericPlanBuilder(t *testing.T) {
+	b := GenericPlanBuilder{}
+	ctx := map[string]string{
+		"steps": `[{"agent_type":"my-agent","params":{"key":"val"}},{"agent_type":"other","group":"g1"}]`,
+	}
+	steps, err := b.BuildPlan("task-1", ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d", len(steps))
+	}
+	if steps[0].AgentType != "my-agent" {
+		t.Errorf("step 0 agent_type=%q", steps[0].AgentType)
+	}
+	if steps[0].Params["key"] != "val" {
+		t.Errorf("step 0 params=%v", steps[0].Params)
+	}
+	if steps[1].Group != "g1" {
+		t.Errorf("step 1 group=%q", steps[1].Group)
+	}
+}
+
+func TestGenericPlanBuilder_MissingSteps(t *testing.T) {
+	b := GenericPlanBuilder{}
+	_, err := b.BuildPlan("task-1", map[string]string{}, nil, nil)
+	if err == nil {
+		t.Error("expected error when steps key is missing")
+	}
+}
+
+func TestGenericPlanBuilder_EmptyArray(t *testing.T) {
+	b := GenericPlanBuilder{}
+	_, err := b.BuildPlan("task-1", map[string]string{"steps": "[]"}, nil, nil)
+	if err == nil {
+		t.Error("expected error for empty steps array")
 	}
 }

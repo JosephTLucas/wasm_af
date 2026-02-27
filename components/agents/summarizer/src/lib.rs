@@ -77,8 +77,25 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
             ))
         })?;
 
-    let search: SearchOutput = serde_json::from_str(search_json)
-        .map_err(|e| Error::msg(format!("web_search_results parse error: {e}")))?;
+    // Handle both single SearchOutput and array-of-SearchOutput (generic merge).
+    let search: SearchOutput = match serde_json::from_str::<SearchOutput>(search_json) {
+        Ok(s) => s,
+        Err(_) => {
+            let items: Vec<SearchOutput> = serde_json::from_str(search_json)
+                .map_err(|e| Error::msg(format!("web_search_results parse error: {e}")))?;
+            let mut merged = SearchOutput {
+                query: String::new(),
+                results: Vec::new(),
+            };
+            let mut queries = Vec::new();
+            for item in items {
+                queries.push(item.query);
+                merged.results.extend(item.results);
+            }
+            merged.query = queries.join(" | ");
+            merged
+        }
+    };
 
     if search.results.is_empty() {
         let payload = serde_json::to_string(&SummaryOutput {

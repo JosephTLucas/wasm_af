@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -185,7 +184,6 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 	if len(result.AllowedHosts) > 0 {
 		opts.AllowedHosts = result.AllowedHosts
 	}
-
 	if result.MaxMemPages != nil {
 		opts.MaxMemPages = *result.MaxMemPages
 	}
@@ -195,10 +193,19 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 	if result.TimeoutSec != nil {
 		opts.Timeout = time.Duration(*result.TimeoutSec) * time.Second
 	}
-
-	if meta.HasHostFunction("llm_complete") {
-		opts.HostFunctions = o.llmHostFunctions()
+	if len(result.Config) > 0 {
+		opts.Config = result.Config
 	}
+	if len(result.AllowedPaths) > 0 {
+		opts.AllowedPaths = result.AllowedPaths
+	}
+
+	// Resolve host functions: policy can override which ones are injected.
+	hostFnNames := meta.HostFunctions
+	if len(result.HostFunctions) > 0 {
+		hostFnNames = result.HostFunctions
+	}
+	opts.HostFunctions = o.hostFns.Resolve(hostFnNames, o)
 
 	// ── INVOKE AGENT ─────────────────────────────────────────────────────────
 	inputPayload := BuildPayload(meta, state, step)
@@ -317,28 +324,20 @@ func (o *Orchestrator) buildStepContext(state *taskstate.TaskState, stepIdx int)
 		if len(e.values) == 1 {
 			ctx = append(ctx, contextPair{Key: e.key, Val: e.values[0]})
 		} else {
-			ctx = append(ctx, contextPair{Key: e.key, Val: mergeSearchOutputs(e.values)})
+			ctx = append(ctx, contextPair{Key: e.key, Val: mergeOutputs(e.values)})
 		}
 	}
 	return ctx
 }
 
-func mergeSearchOutputs(outputs []string) string {
-	type searchOutput struct {
-		Query   string            `json:"query"`
-		Results []json.RawMessage `json:"results"`
-	}
-
-	var merged searchOutput
-	var queries []string
+// mergeOutputs wraps multiple step outputs into a JSON array. The
+// orchestrator is format-agnostic; the consuming agent decides how
+// to interpret the array elements.
+func mergeOutputs(outputs []string) string {
+	merged := make([]json.RawMessage, 0, len(outputs))
 	for _, raw := range outputs {
-		var so searchOutput
-		if err := json.Unmarshal([]byte(raw), &so); err == nil {
-			queries = append(queries, so.Query)
-			merged.Results = append(merged.Results, so.Results...)
-		}
+		merged = append(merged, json.RawMessage(raw))
 	}
-	merged.Query = strings.Join(queries, " | ")
 	b, _ := json.Marshal(merged)
 	return string(b)
 }

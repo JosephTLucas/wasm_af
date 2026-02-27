@@ -171,6 +171,29 @@ func readOverrides(authz map[string]any, r *PolicyResult) {
 	if v, ok := toInt(authz["timeout_sec"]); ok {
 		r.TimeoutSec = &v
 	}
+	if fns, ok := authz["host_functions"].([]any); ok {
+		for _, f := range fns {
+			if s, ok := f.(string); ok {
+				r.HostFunctions = append(r.HostFunctions, s)
+			}
+		}
+	}
+	if cfg, ok := authz["config"].(map[string]any); ok {
+		r.Config = make(map[string]string, len(cfg))
+		for k, v := range cfg {
+			if s, ok := v.(string); ok {
+				r.Config[k] = s
+			}
+		}
+	}
+	if paths, ok := authz["allowed_paths"].(map[string]any); ok {
+		r.AllowedPaths = make(map[string]string, len(paths))
+		for k, v := range paths {
+			if s, ok := v.(string); ok {
+				r.AllowedPaths[k] = s
+			}
+		}
+	}
 }
 
 // LoadRegoModules loads Rego source files from the given path.

@@ -45,10 +45,6 @@ func run(logger *slog.Logger) error {
 	natsURL := envOr("NATS_URL", defaultNatsURL)
 	opaPolicyPath := os.Getenv("OPA_POLICY")
 	opaDataPath := os.Getenv("OPA_DATA")
-	llmMode := envOr("LLM_MODE", "mock")
-	llmBaseURL := envOr("LLM_BASE_URL", "")
-	llmAPIKey := envOr("LLM_API_KEY", "")
-	llmModel := envOr("LLM_MODEL", "gpt-4o-mini")
 
 	pluginTimeoutSec := envOrInt("PLUGIN_TIMEOUT_SEC", 30)
 	pluginMaxMemPages := envOrInt("PLUGIN_MAX_MEMORY_PAGES", 256) // 256 pages = 16 MiB
@@ -75,6 +71,16 @@ func run(logger *slog.Logger) error {
 
 	planBuilders := NewPlanBuilderRegistry()
 	RegisterDefaultBuilders(planBuilders)
+
+	// ── HOST FUNCTION REGISTRY ──────────────────────────────────────────────
+	hostFns := NewHostFnRegistry()
+	hostFns.Register("llm_complete", NewLLMHostFnProvider(
+		envOr("LLM_MODE", "mock"),
+		envOr("LLM_BASE_URL", ""),
+		envOr("LLM_API_KEY", ""),
+		envOr("LLM_MODEL", "gpt-4o-mini"),
+		logger,
+	))
 
 	// ── OPA POLICY + DATA ────────────────────────────────────────────────────
 	var initialData map[string]any
@@ -136,11 +142,8 @@ func run(logger *slog.Logger) error {
 		policy:               policy,
 		registry:             registry,
 		builders:             planBuilders,
+		hostFns:              hostFns,
 		ctx:                  ctx,
-		llmMode:              llmMode,
-		llmBaseURL:           llmBaseURL,
-		llmAPIKey:            llmAPIKey,
-		llmModel:             llmModel,
 		pluginTimeout:        time.Duration(pluginTimeoutSec) * time.Second,
 		pluginMaxMemoryPages: uint32(pluginMaxMemPages),
 		pluginMaxHTTPBytes:   pluginMaxHTTPBytes,

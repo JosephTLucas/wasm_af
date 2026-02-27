@@ -59,19 +59,28 @@ WASM_AF is built on the premise that this is exactly the runtime model AI agents
 │  ┌────────────▼──────▼──────▼────────────┐                   │
 │  │        Extism Runtime (wazero)        │                   │
 │  │  • allowed_hosts per instance         │                   │
-│  │  • host functions (LLM) per instance  │                   │
-│  │  • memory limits per instance         │                   │
-│  │  • execution timeout per invocation   │                   │
+│  │  • host functions via registry        │                   │
+│  │  • config, allowed_paths per step     │                   │
+│  │  • memory limits, timeout per step    │                   │
 │  │  • WASM sandbox (no ambient authority)│                   │
 │  └───────────────────────────────────────┘                   │
 │                                                              │
-│  ┌──────────────────────────────────────────┐                   │
-│  │  OPA Policy Engine (embedded)           │                   │
-│  │  • data.wasm_af.authz — step policy     │                   │
-│  │  • data.wasm_af.submit — submit policy  │                   │
-│  │  • data store ← NATS KV live updates    │                   │
-│  │  • structured decisions (overrides)     │                   │
-│  └──────────────────────────────────────────┘                   │
+│  ┌──────────────────────────────────────────┐                │
+│  │  OPA Policy Engine (embedded)           │                │
+│  │  • data.wasm_af.authz — step policy     │                │
+│  │  • data.wasm_af.submit — submit policy  │                │
+│  │  • data store ← NATS KV live updates    │                │
+│  │  • structured decisions: allowed_hosts, │                │
+│  │    memory, timeout, config, paths,      │                │
+│  │    host_functions                       │                │
+│  └──────────────────────────────────────────┘                │
+│                                                              │
+│  ┌──────────────────────────────────────────┐                │
+│  │  Host Function Registry                 │                │
+│  │  • providers registered by name         │                │
+│  │  • resolved dynamically per step        │                │
+│  │  • policy can override/filter           │                │
+│  └──────────────────────────────────────────┘                │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -148,11 +157,14 @@ wasm_af/
 │
 ├── provider/orchestrator/          # the framework — Go binary
 │   ├── main.go                     # standalone binary, env config, HTTP server
-│   ├── orchestrator.go             # Extism plugin lifecycle (create → call → destroy)
+│   ├── orchestrator.go             # Extism plugin lifecycle, param enrichment
 │   ├── policy.go                   # OPA evaluator (compiles Rego, evaluates per step)
-│   ├── loop.go                     # plan execution, parallel dispatch, context merging
-│   ├── taskstate.go                # HTTP handlers, plan building
-│   └── llm.go                      # LLM host function (mock + real OpenAI)
+│   ├── loop.go                     # plan execution, parallel dispatch, generic context merging
+│   ├── hostfns.go                  # host function registry (dynamic, name-based)
+│   ├── llm.go                      # llm_complete host function provider
+│   ├── registry.go                 # agent registry with enrichments
+│   ├── builders.go                 # plan builders (including generic JSON-driven)
+│   └── taskstate.go                # HTTP handlers
 │
 ├── pkg/taskstate/                  # NATS JetStream KV: task state, audit log, payloads
 │

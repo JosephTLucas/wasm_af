@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"path/filepath"
 	"time"
 
@@ -14,7 +15,9 @@ import (
 )
 
 // Orchestrator is the central coordinator. It embeds the Extism WASM runtime
-// and manages task state via NATS JetStream KV.
+// and manages task state via NATS JetStream KV. The struct is agent-agnostic —
+// all agent-specific behavior lives in the registry, host function providers,
+// and Rego policies.
 type Orchestrator struct {
 	logger   *slog.Logger
 	store    *taskstate.Store
@@ -22,24 +25,13 @@ type Orchestrator struct {
 	policy   *OPAEvaluator
 	registry *AgentRegistry
 	builders *PlanBuilderRegistry
+	hostFns  *HostFnRegistry
 
-	// ctx is the server-lifetime context, cancelled on SIGINT/SIGTERM.
-	// Task goroutines derive from this so in-flight work stops on shutdown.
 	ctx context.Context
 
-	llmMode    string // "mock" or "real"
-	llmBaseURL string
-	llmAPIKey  string
-	llmModel   string
-
-	// pluginTimeout is the maximum wall-clock time a single plugin invocation
-	// may run before the context is cancelled and the WASM execution is aborted.
-	pluginTimeout time.Duration
-	// pluginMaxMemoryPages caps the linear memory a plugin instance may allocate.
-	// One page = 64 KiB. 0 means no limit (not recommended in production).
+	pluginTimeout        time.Duration
 	pluginMaxMemoryPages uint32
-	// pluginMaxHTTPBytes caps the size of any HTTP response a plugin may read.
-	pluginMaxHTTPBytes int64
+	pluginMaxHTTPBytes   int64
 }
 
 // TaskInput is the JSON structure passed to every agent plugin.
@@ -63,15 +55,19 @@ type TaskOutput struct {
 
 // PolicyResult is the outcome of an OPA policy evaluation. Beyond the
 // allow/deny decision, it may carry structured overrides that shape how
-// the plugin is instantiated (resource limits, network scoping).
+// the plugin is instantiated (resource limits, network scoping, config,
+// filesystem access, host function filtering).
 type PolicyResult struct {
-	Permitted    bool     `json:"permitted"`
-	DenyCode     *string  `json:"deny_code,omitempty"`
-	DenyMessage  *string  `json:"deny_message,omitempty"`
-	AllowedHosts []string `json:"allowed_hosts,omitempty"`
-	MaxMemPages  *uint32  `json:"max_memory_pages,omitempty"`
-	MaxHTTPBytes *int64   `json:"max_http_bytes,omitempty"`
-	TimeoutSec   *int     `json:"timeout_sec,omitempty"`
+	Permitted     bool              `json:"permitted"`
+	DenyCode      *string           `json:"deny_code,omitempty"`
+	DenyMessage   *string           `json:"deny_message,omitempty"`
+	AllowedHosts  []string          `json:"allowed_hosts,omitempty"`
+	MaxMemPages   *uint32           `json:"max_memory_pages,omitempty"`
+	MaxHTTPBytes  *int64            `json:"max_http_bytes,omitempty"`
+	TimeoutSec    *int              `json:"timeout_sec,omitempty"`
+	HostFunctions []string          `json:"host_functions,omitempty"`
+	Config        map[string]string `json:"config,omitempty"`
+	AllowedPaths  map[string]string `json:"allowed_paths,omitempty"`
 }
 
 // PluginOpts carries per-step overrides for plugin creation,
@@ -82,6 +78,8 @@ type PluginOpts struct {
 	MaxMemPages   uint32
 	MaxHTTPBytes  int64
 	Timeout       time.Duration
+	Config        map[string]string
+	AllowedPaths  map[string]string
 }
 
 // wasmPath returns the absolute path to a compiled .wasm plugin.
@@ -110,6 +108,12 @@ func (o *Orchestrator) invokeAgent(
 	}
 	if len(opts.AllowedHosts) > 0 {
 		manifest.AllowedHosts = opts.AllowedHosts
+	}
+	if len(opts.Config) > 0 {
+		manifest.Config = opts.Config
+	}
+	if len(opts.AllowedPaths) > 0 {
+		manifest.AllowedPaths = opts.AllowedPaths
 	}
 
 	config := extism.PluginConfig{
@@ -162,19 +166,17 @@ func (o *Orchestrator) evaluateStepPolicy(
 		}, nil
 	}
 
-	stepInput := map[string]any{
-		"id":         step.ID,
-		"index":      stepIdx,
-		"agent_type": step.AgentType,
-		"group":      step.Group,
-		"params":     step.Params,
-	}
-	if u, ok := step.Params["url"]; ok {
-		stepInput["domain"] = extractDomain(u)
-	}
+	enrichedParams := enrichParams(step.Params, meta.Enrichments)
 
 	input := map[string]any{
-		"step": stepInput,
+		"step": map[string]any{
+			"id":         step.ID,
+			"index":      stepIdx,
+			"agent_type": step.AgentType,
+			"group":      step.Group,
+			"params":     enrichedParams,
+			"domain":     enrichedParams["domain"],
+		},
 		"agent": map[string]any{
 			"wasm_name":      meta.WasmName,
 			"capability":     meta.Capability,
@@ -216,4 +218,34 @@ func countCompleted(state *taskstate.TaskState) int {
 		}
 	}
 	return n
+}
+
+// enrichParams applies the declared enrichments to a copy of the step params.
+// Transforms are generic and driven by the agent registry JSON, not hardcoded.
+func enrichParams(params map[string]string, enrichments []ParamEnrichment) map[string]string {
+	out := make(map[string]string, len(params))
+	for k, v := range params {
+		out[k] = v
+	}
+	for _, e := range enrichments {
+		src, ok := out[e.Source]
+		if !ok {
+			continue
+		}
+		switch e.Transform {
+		case "domain":
+			out[e.Target] = extractDomain(src)
+		default:
+			out[e.Target] = src
+		}
+	}
+	return out
+}
+
+func extractDomain(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	return u.Hostname()
 }

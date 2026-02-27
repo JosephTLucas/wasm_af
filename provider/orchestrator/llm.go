@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -30,51 +31,55 @@ type llmResponse struct {
 	ModelUsed string `json:"model_used"`
 }
 
-// llmHostFunctions returns the host functions to inject into the summarizer plugin.
-func (o *Orchestrator) llmHostFunctions() []extism.HostFunction {
-	fn := extism.NewHostFunctionWithStack(
-		"llm_complete",
-		func(ctx context.Context, p *extism.CurrentPlugin, stack []uint64) {
-			inputBytes, err := p.ReadBytes(stack[0])
-			if err != nil {
-				o.logger.Error("llm_complete: read input", "err", err)
-				stack[0] = 0
-				return
-			}
-
-			var req llmRequest
-			if err := json.Unmarshal(inputBytes, &req); err != nil {
-				o.logger.Error("llm_complete: unmarshal", "err", err)
-				stack[0] = 0
-				return
-			}
-
-			var resp llmResponse
-			if o.llmMode == "mock" {
-				resp = mockLLM(req)
-			} else {
-				resp, err = realLLM(ctx, req, o.llmBaseURL, o.llmAPIKey, o.llmModel)
+// NewLLMHostFnProvider returns a HostFnProvider that injects the llm_complete
+// host function. All LLM configuration is captured in the closure — the
+// Orchestrator struct has no LLM-specific fields.
+func NewLLMHostFnProvider(mode, baseURL, apiKey, model string, logger *slog.Logger) HostFnProvider {
+	return func(_ *Orchestrator) []extism.HostFunction {
+		fn := extism.NewHostFunctionWithStack(
+			"llm_complete",
+			func(ctx context.Context, p *extism.CurrentPlugin, stack []uint64) {
+				inputBytes, err := p.ReadBytes(stack[0])
 				if err != nil {
-					o.logger.Error("llm_complete: upstream error", "err", err)
+					logger.Error("llm_complete: read input", "err", err)
 					stack[0] = 0
 					return
 				}
-			}
 
-			outputBytes, _ := json.Marshal(resp)
-			offset, err := p.WriteBytes(outputBytes)
-			if err != nil {
-				o.logger.Error("llm_complete: write output", "err", err)
-				stack[0] = 0
-				return
-			}
-			stack[0] = offset
-		},
-		[]extism.ValueType{extism.ValueTypePTR},
-		[]extism.ValueType{extism.ValueTypePTR},
-	)
-	fn.SetNamespace("extism:host/user")
-	return []extism.HostFunction{fn}
+				var req llmRequest
+				if err := json.Unmarshal(inputBytes, &req); err != nil {
+					logger.Error("llm_complete: unmarshal", "err", err)
+					stack[0] = 0
+					return
+				}
+
+				var resp llmResponse
+				if mode == "mock" {
+					resp = mockLLM(req)
+				} else {
+					resp, err = realLLM(ctx, req, baseURL, apiKey, model)
+					if err != nil {
+						logger.Error("llm_complete: upstream error", "err", err)
+						stack[0] = 0
+						return
+					}
+				}
+
+				outputBytes, _ := json.Marshal(resp)
+				offset, err := p.WriteBytes(outputBytes)
+				if err != nil {
+					logger.Error("llm_complete: write output", "err", err)
+					stack[0] = 0
+					return
+				}
+				stack[0] = offset
+			},
+			[]extism.ValueType{extism.ValueTypePTR},
+			[]extism.ValueType{extism.ValueTypePTR},
+		)
+		fn.SetNamespace("extism:host/user")
+		return []extism.HostFunction{fn}
+	}
 }
 
 func mockLLM(req llmRequest) llmResponse {
