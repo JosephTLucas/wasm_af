@@ -256,6 +256,17 @@ func (o *Orchestrator) evaluateStepPolicy(
 		}
 	}
 
+	priorResults := make(map[string]string)
+	for i := 0; i < stepIdx; i++ {
+		s := state.Plan[i]
+		v, ok := state.Results[s.OutputKey]
+		if !ok {
+			continue
+		}
+		key := o.contextKeyForAgent(s.AgentType)
+		priorResults[key] = v
+	}
+
 	input := map[string]any{
 		"step": stepInput,
 		"agent": map[string]any{
@@ -266,12 +277,14 @@ func (o *Orchestrator) evaluateStepPolicy(
 		"task": map[string]any{
 			"id":         state.TaskID,
 			"type":       state.Context["type"],
+			"context":    state.Context,
 			"created_at": state.CreatedAt,
 		},
 		"plan": map[string]any{
 			"total_steps":     len(state.Plan),
 			"completed_steps": countCompleted(state),
 		},
+		"prior_results": priorResults,
 	}
 	return o.policy.EvaluateStep(ctx, input)
 }

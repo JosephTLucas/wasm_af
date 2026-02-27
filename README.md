@@ -211,9 +211,11 @@ wasm_af/
     └── wasmclaw/                   # personal AI assistant with two-tier execution
         ├── run.sh                  # builds, runs, exercises every agent + security boundary
         ├── agents.json             # agent registry (9 agents, capability/host-fn mappings)
-        ├── policy.rego             # shell hardening, sandbox policy, file-ops confinement
-        ├── data.json               # command/path/language allowlists, feature flags
-        ├── policy_test.rego        # 51 OPA tests (metachar, path, language, splice, email)
+        ├── policy.rego             # step policy: authz, shell hardening, email-reply jailbreak gate
+        ├── jailbreak.rego          # standalone jailbreak scanner (ad-hoc opa eval)
+        ├── data.json               # allowlists, feature flags, jailbreak patterns
+        ├── policy_test.rego        # OPA authz tests (metachar, path, splice, jailbreak gate)
+        ├── jailbreak_test.rego     # OPA jailbreak scanner tests
         ├── Makefile                # make demo, make demo-api, make test-policy
         └── README.md
 ```

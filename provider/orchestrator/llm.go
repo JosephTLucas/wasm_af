@@ -224,6 +224,17 @@ func mockRoute(msg string) mockRouteResult {
 }
 
 func mockEchoLLM(req llmRequest) llmResponse {
+	for _, m := range req.Messages {
+		if m.Role == "user" {
+			lo := strings.ToLower(m.Content)
+			if strings.Contains(lo, "draft") && strings.Contains(lo, "reply") {
+				return llmResponse{
+					Content:   "[mock-llm] Draft reply: Thanks for your email! I've noted the details and will follow up accordingly.",
+					ModelUsed: "mock-echo",
+				}
+			}
+		}
+	}
 	var sb strings.Builder
 	sb.WriteString("[mock-llm summary]\n\n")
 	for _, m := range req.Messages {
@@ -238,6 +249,8 @@ func mockEchoLLM(req llmRequest) llmResponse {
 	}
 }
 
+const llmMaxRetries = 2
+
 func realLLM(ctx context.Context, req llmRequest, baseURL, apiKey, defaultModel string) (llmResponse, error) {
 	model := req.Model
 	if model == "" {
@@ -251,7 +264,7 @@ func realLLM(ctx context.Context, req llmRequest, baseURL, apiKey, defaultModel 
 		Temperature *float32     `json:"temperature,omitempty"`
 		TopP        *float32     `json:"top_p,omitempty"`
 	}
-	body, _ := json.Marshal(openAIReq{
+	reqBody, _ := json.Marshal(openAIReq{
 		Model: model, Messages: req.Messages,
 		MaxTokens: req.MaxTokens, Temperature: req.Temperature,
 		TopP: req.TopP,
@@ -264,40 +277,76 @@ func realLLM(ctx context.Context, req llmRequest, baseURL, apiKey, defaultModel 
 	} else {
 		endpoint = base + "/v1/chat/completions"
 	}
-	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	httpReq.Header.Set("Content-Type", "application/json")
-	if apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
-	}
 
 	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return llmResponse{}, fmt.Errorf("upstream request: %w", err)
-	}
-	defer resp.Body.Close()
 
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	var lastErr error
+	for attempt := 0; attempt <= llmMaxRetries; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return llmResponse{}, fmt.Errorf("context cancelled during retry: %w", ctx.Err())
+			case <-time.After(time.Duration(attempt) * 2 * time.Second):
+			}
+		}
 
-	type openAIResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Model string `json:"model"`
-	}
+		httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(reqBody))
+		httpReq.Header.Set("Content-Type", "application/json")
+		if apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 
-	var apiResp openAIResp
-	if err := json.Unmarshal(raw, &apiResp); err != nil {
-		return llmResponse{}, fmt.Errorf("unmarshal (status %d): %w", resp.StatusCode, err)
-	}
-	if len(apiResp.Choices) == 0 {
-		return llmResponse{}, fmt.Errorf("no choices (status %d)", resp.StatusCode)
-	}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			lastErr = fmt.Errorf("upstream request: %w", err)
+			continue
+		}
 
-	return llmResponse{
-		Content:   apiResp.Choices[0].Message.Content,
-		ModelUsed: apiResp.Model,
-	}, nil
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+
+		if resp.StatusCode == 429 || resp.StatusCode == 502 || resp.StatusCode == 503 {
+			lastErr = fmt.Errorf("transient HTTP %d: %s", resp.StatusCode, truncateBody(raw))
+			continue
+		}
+
+		if resp.StatusCode != 200 {
+			return llmResponse{}, fmt.Errorf("HTTP %d from LLM API: %s", resp.StatusCode, truncateBody(raw))
+		}
+
+		if len(raw) == 0 {
+			lastErr = fmt.Errorf("empty response body (HTTP %d)", resp.StatusCode)
+			continue
+		}
+
+		type openAIResp struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+			Model string `json:"model"`
+		}
+
+		var apiResp openAIResp
+		if err := json.Unmarshal(raw, &apiResp); err != nil {
+			return llmResponse{}, fmt.Errorf("unmarshal (HTTP %d, body %dB): %w", resp.StatusCode, len(raw), err)
+		}
+		if len(apiResp.Choices) == 0 {
+			return llmResponse{}, fmt.Errorf("no choices in response (HTTP %d)", resp.StatusCode)
+		}
+
+		return llmResponse{
+			Content:   apiResp.Choices[0].Message.Content,
+			ModelUsed: apiResp.Model,
+		}, nil
+	}
+	return llmResponse{}, fmt.Errorf("LLM request failed after %d attempts: %w", llmMaxRetries+1, lastErr)
+}
+
+func truncateBody(b []byte) string {
+	if len(b) > 200 {
+		return string(b[:200]) + "..."
+	}
+	return string(b)
 }

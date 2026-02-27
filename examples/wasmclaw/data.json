@@ -10,7 +10,18 @@
     "file_ops_enabled": true,
     "sandbox_exec_enabled": true,
     "email_send_enabled": true,
-    "email_read_enabled": true
+    "email_read_enabled": true,
+    "jailbreak_patterns": [
+      "ignore all previous instructions",
+      "ignore your previous instructions",
+      "disregard your instructions",
+      "disregard all previous",
+      "you are now a",
+      "new system prompt:",
+      "override your instructions",
+      "forget your instructions",
+      "important system message:"
+    ]
   },
   "secrets": {
     "email_api_key": "sk-email-demo-key-2026-REDACTED"

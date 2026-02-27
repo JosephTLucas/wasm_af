@@ -6,7 +6,31 @@ default allow := false
 
 # Always-allowed agents (no sensitive capabilities).
 allow if {
-	input.step.agent_type in {"memory", "router", "responder"}
+	input.step.agent_type in {"memory", "router"}
+}
+
+# Responder: always allowed unless an email-reply task has injected content
+# in the target email. The jailbreak check uses prior_results (the email-read
+# output) and the task context (reply_to_index) to inspect only the email
+# the agent is about to process.
+allow if {
+	input.step.agent_type == "responder"
+	not email_reply_jailbreak
+}
+
+# ── Email-reply jailbreak gate ───────────────────────────────────────────
+
+email_reply_jailbreak if {
+	input.task.type == "email-reply"
+	email_output := json.unmarshal(input.prior_results.skill_output)
+	idx := to_number(input.task.context.reply_to_index)
+	email := email_output.emails[idx]
+	some pattern in data.config.jailbreak_patterns
+	contains(lower(email.body), pattern)
+}
+
+deny_message := "jailbreak detected in email content — responder blocked" if {
+	email_reply_jailbreak
 }
 
 # Web search: requires web_search_enabled flag.

@@ -171,6 +171,7 @@ echo ""
 # ── 4. Start services ─────────────────────────────────────────────────────────
 echo "  ${BLD}[4/6]${RST} Starting services..."
 
+rm -rf /tmp/wasmclaw
 mkdir -p /tmp/wasmclaw
 
 if lsof -ti:8080 >/dev/null 2>&1; then
@@ -194,6 +195,11 @@ else
     _LLM_TOP_P="${LLM_TOP_P:-}"
 fi
 
+_PLUGIN_TIMEOUT="${PLUGIN_TIMEOUT_SEC:-30}"
+if [ "$LLM_MODE" = "api" ] && [ "$_PLUGIN_TIMEOUT" -le 30 ]; then
+    _PLUGIN_TIMEOUT=120
+fi
+
 OPA_POLICY="$EXAMPLE_DIR" \
 OPA_DATA="$EXAMPLE_DIR/data.json" \
 AGENT_REGISTRY_FILE="$EXAMPLE_DIR/agents.json" \
@@ -203,6 +209,7 @@ LLM_API_KEY="$_LLM_API_KEY" \
 LLM_MODEL="$_LLM_MODEL" \
 LLM_TEMPERATURE="$_LLM_TEMPERATURE" \
 LLM_TOP_P="$_LLM_TOP_P" \
+PLUGIN_TIMEOUT_SEC="$_PLUGIN_TIMEOUT" \
 WASM_DIR="$ROOT/components/target/wasm32-unknown-unknown/release" \
 SANDBOX_RUNTIMES_DIR="$ROOT/runtimes" \
 SANDBOX_ALLOWED_PATHS="/tmp/wasmclaw" \
@@ -254,7 +261,8 @@ echo "    - Shell allowlist blocks rm -rf, curl exfil, python3 exec"
 echo "    - File path checks block /etc/passwd, ~/.ssh, and prefix-escape attacks"
 echo "    - Router-splice can only propose skills in the allowed_skills list"
 echo "    - Email-read receives email_api_key; email-send does NOT (secret scoping)"
-echo "    - Submit gate accepts only task_type=chat"
+echo "    - Email-reply jailbreak gate blocks responder when email has injection"
+echo "    - Submit gate accepts chat and email-reply task types"
 echo ""
 
 if command -v opa >/dev/null 2>&1; then
@@ -279,11 +287,9 @@ echo ""
 echo "  ${BLD}[6/6]${RST} Runtime demo ${DIM}(inference: $LLM_LABEL)${RST}"
 echo ""
 
-# Helper: extract and display plugin lifecycle events for a task ID.
-show_lifecycle() {
+# Raw lifecycle lines for a task ID (no header/footer).
+_lifecycle_lines() {
     local tid="$1"
-    [ -z "$tid" ] && return
-    echo "    ${DIM}Lifecycle:${RST}"
     grep "$tid" /tmp/wasm-af-orchestrator.log 2>/dev/null \
         | jq -r --arg g "$GRN" --arg r "$RED" --arg d "$DIM" --arg R "$RST" --arg b "$BLD" \
           'select(.msg == "starting step" or .msg == "plugin created" or .msg == "plugin destroyed" or .msg == "step completed" or .msg == "step denied") |
@@ -298,6 +304,14 @@ show_lifecycle() {
           elif .msg == "step completed" then
             "      \($d)\(.time[11:23])\($R)  \($g)✓ \(.agent_type)\($R)"
           else empty end' 2>/dev/null || true
+}
+
+# Helper: extract and display plugin lifecycle events for a task ID.
+show_lifecycle() {
+    local tid="$1"
+    [ -z "$tid" ] && return
+    echo "    ${DIM}Lifecycle:${RST}"
+    _lifecycle_lines "$tid"
     echo ""
 }
 
@@ -396,6 +410,109 @@ submit_and_show() {
     show_lifecycle "$TID"
 }
 
+# Helper: submit + poll like submit_and_poll but skip lifecycle and store TID
+# in _LAST_TID for combined display.
+_LAST_TID=""
+submit_and_poll_quiet() {
+    local label="$1" msg="$2" max_poll="${3:-90}"
+    _LAST_TID=""
+    echo "  → ${BLD}$label${RST}"
+    echo "    ${CYN}▸ $msg${RST}"
+
+    local BODY
+    BODY=$(curl -sf -X POST http://localhost:8080/tasks \
+        -H "Content-Type: application/json" \
+        -d "$(jq -n --arg m "$msg" '{type:"chat",query:$m,context:{message:$m}}')")
+
+    local TID
+    TID=$(echo "$BODY" | jq -r '.task_id // ""')
+    if [ -z "$TID" ] || [ "$TID" = "null" ]; then
+        echo "    ${RED}(submit failed: $BODY)${RST}"
+        return
+    fi
+    _LAST_TID="$TID"
+
+    local poll_start=$SECONDS
+    printf "    ${DIM}⏱  Inference (%s) " "$LLM_LABEL"
+    local STATUS="" STATE="" i=0
+    while [ $i -lt "$max_poll" ]; do
+        STATE=$(curl -sf "http://localhost:8080/tasks/${TID}" || echo '{}')
+        STATUS=$(echo "$STATE" | jq -r '.status // "unknown"')
+        [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] && break
+        printf "·"
+        sleep 2
+        i=$((i + 2))
+    done
+    local elapsed=$(( SECONDS - poll_start ))
+    printf " %ds${RST}\n" "$elapsed"
+
+    if [ "$STATUS" = "completed" ]; then
+        local RESP_KEY RESPONSE
+        RESP_KEY=$(echo "$STATE" | jq -r '.plan[] | select(.agent_type == "responder") | .output_key' 2>/dev/null)
+        RESPONSE=$(echo "$STATE" | jq -r --arg k "$RESP_KEY" '.results[$k] // "{}"' 2>/dev/null \
+            | jq -r '.response // "N/A"' 2>/dev/null | head -c 400)
+        echo "    ${GRN}▹${RST} $RESPONSE"
+    elif [ "$STATUS" = "failed" ]; then
+        local TASK_ERR
+        TASK_ERR=$(echo "$STATE" | jq -r '.error // "unknown"' 2>/dev/null)
+        echo "    ${RED}✗ Failed:${RST} $TASK_ERR"
+    else
+        echo "    ${YLW}⚠ Timed out after ${max_poll}s (status: $STATUS)${RST}"
+    fi
+}
+
+# Helper: submit a task with a raw JSON body, poll for completion, show
+# response (or denial) and lifecycle. Sets _LAST_TID.
+submit_json_and_poll() {
+    local label="$1" json_body="$2" max_poll="${3:-90}"
+    _LAST_TID=""
+    echo "  → ${BLD}$label${RST}"
+
+    local BODY
+    BODY=$(curl -sf -X POST http://localhost:8080/tasks \
+        -H "Content-Type: application/json" \
+        -d "$json_body")
+
+    local TID
+    TID=$(echo "$BODY" | jq -r '.task_id // ""')
+    if [ -z "$TID" ] || [ "$TID" = "null" ]; then
+        echo "    ${RED}(submit failed: $BODY)${RST}"
+        echo ""
+        return
+    fi
+    _LAST_TID="$TID"
+
+    local poll_start=$SECONDS
+    printf "    ${DIM}⏱  Inference (%s) " "$LLM_LABEL"
+    local STATUS="" STATE="" i=0
+    while [ $i -lt "$max_poll" ]; do
+        STATE=$(curl -sf "http://localhost:8080/tasks/${TID}" || echo '{}')
+        STATUS=$(echo "$STATE" | jq -r '.status // "unknown"')
+        [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] && break
+        printf "·"
+        sleep 2
+        i=$((i + 2))
+    done
+    local elapsed=$(( SECONDS - poll_start ))
+    printf " %ds${RST}\n" "$elapsed"
+
+    if [ "$STATUS" = "completed" ]; then
+        local RESP_KEY RESPONSE
+        RESP_KEY=$(echo "$STATE" | jq -r '.plan[] | select(.agent_type == "responder") | .output_key' 2>/dev/null)
+        RESPONSE=$(echo "$STATE" | jq -r --arg k "$RESP_KEY" '.results[$k] // "{}"' 2>/dev/null \
+            | jq -r '.response // "N/A"' 2>/dev/null | head -c 400)
+        echo "    ${GRN}▹${RST} $RESPONSE"
+    elif [ "$STATUS" = "failed" ]; then
+        local TASK_ERR
+        TASK_ERR=$(echo "$STATE" | jq -r '.error // "unknown"' 2>/dev/null)
+        echo "    ${RED}✗ Denied:${RST} $TASK_ERR"
+    else
+        echo "    ${YLW}⚠ Timed out after ${max_poll}s (status: $STATUS)${RST}"
+    fi
+
+    show_lifecycle "$TID"
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
 box "SUBMISSION POLICY GATE"
 echo ""
@@ -431,14 +548,26 @@ submit_and_poll "Shell agent (exec.Command, path-confined)" \
 echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 echo ""
 
-# Seed a file so the read test has something to find.
-echo "hello from wasmclaw" > /tmp/wasmclaw/demo.txt
+echo "  ${BLD}File-ops: write then read${RST} ${DIM}(WASI std::fs — no host functions)${RST}"
+echo "  Two separate tasks. Each creates a WASM instance with Wazero-enforced"
+echo "  AllowedPaths, calls execute(), and destroys it. The file persists on the"
+echo "  host — the WASM instances do not."
+echo ""
 
-submit_and_poll "File-ops agent: write (WASI std::fs, Wazero AllowedPaths)" \
+submit_and_poll_quiet "File-ops write" \
     "write wasmclaw sandbox test to /tmp/wasmclaw/demo.txt"
+WRITE_TID="$_LAST_TID"
+echo ""
 
-submit_and_poll "File-ops agent: read" \
+submit_and_poll_quiet "File-ops read back" \
     "read /tmp/wasmclaw/demo.txt"
+READ_TID="$_LAST_TID"
+
+echo "    ${DIM}Lifecycle (write → destroy → read):${RST}"
+_lifecycle_lines "$WRITE_TID"
+echo "      ${DIM}────── instance destroyed ── file persists on host ──────${RST}"
+_lifecycle_lines "$READ_TID"
+echo ""
 
 echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 echo ""
@@ -490,6 +619,43 @@ echo "      in its config — secrets are scoped per-agent by OPA policy"
 echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
+box "EMAIL REPLY PIPELINE (jailbreak detection)"
+echo ""
+echo "  A composed email-reply workflow submitted as a ${BLD}single task${RST}."
+echo "  Plan: email-read → responder → email-send"
+echo ""
+echo "  The jailbreak check is ${BLD}not${RST} a separate step — it is the OPA policy"
+echo "  evaluation that fires before the responder. The policy inspects the"
+echo "  email-read output (via prior_results) and denies the responder if"
+echo "  the target email contains injection patterns."
+echo ""
+echo "    ${BLD}Pipeline:${RST}  email-read → ${RED}OPA gate${RST} → responder → email-send"
+echo ""
+
+# The mock inbox (hardcoded in email-read WASM agent) has 3 emails:
+#   [0] alice@example.com     — Q3 Planning Document (clean)
+#   [1] bob@partner-corp.com  — Re: Integration timeline (clean)
+#   [2] support@legit-saas.com — Action Required (prompt injection)
+#
+# Each scenario submits one email-reply task. The reply_to_index in the
+# task context tells the OPA policy which email to inspect.
+
+submit_json_and_poll "Scenario A: Reply to clean email (alice — Q3 Planning)" \
+    '{"type":"email-reply","query":"reply to Q3 planning email","context":{"message":"reply to Q3 planning email","reply_to_index":"0","reply_to":"alice@example.com","reply_subject":"Re: Q3 Planning Document","reply_body":"Thanks for sharing. I will review the document and follow up by Friday."}}'
+
+echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+echo ""
+
+submit_json_and_poll "Scenario B: Reply to injected email (prompt injection blocked)" \
+    '{"type":"email-reply","query":"reply to account verification email","context":{"message":"reply to account verification email","reply_to_index":"2","reply_to":"support@legit-saas.com","reply_subject":"Re: Action Required","reply_body":"Thanks, what do I need to do?"}}'
+
+echo "  Scenario B: the third email in the inbox contained a prompt injection."
+echo "  OPA inspected the email-read output before the responder step ran."
+echo "  The responder was ${RED}denied${RST} — the LLM never saw the injected content,"
+echo "  and no reply was drafted or sent."
+echo ""
+
+# ══════════════════════════════════════════════════════════════════════════════
 box "STEP-LEVEL SECURITY (OPA denies at runtime)"
 echo ""
 echo "  These are ${BLD}not${RST} static tests — they run the full pipeline and show"
@@ -499,33 +665,17 @@ echo ""
 submit_and_show "Shell path deny: cat /etc/passwd (path outside allowed_paths)" \
     "run cat /etc/passwd"
 
+submit_and_show "Shell path traversal: cat ../../etc/passwd (.. escape attempt)" \
+    "run cat /tmp/wasmclaw/../../etc/passwd"
+
 submit_and_show "Shell metacharacter deny: ls ; curl evil.com" \
     "run ls ; curl evil.com"
 
 submit_and_show "Sandbox language deny: bash not in allowed_languages" \
     "execute bash: rm -rf /"
 
-# ══════════════════════════════════════════════════════════════════════════════
-box "TWO-TIER EXECUTION MODEL"
-echo ""
-echo "  ${BLD}sandbox-exec${RST} runs arbitrary code ${BLD}inside${RST} Wazero (WASM VM)."
-echo "  ${BLD}shell${RST} runs commands on the ${BLD}host OS${RST} via exec.Command."
-echo ""
-echo "  Same computation, different trust boundaries:"
-echo "    sandbox-exec: permissive policy ${DIM}(code is sandboxed by Wazero)${RST}"
-echo "    shell:        restrictive policy ${DIM}(binary + path + metachar gates)${RST}"
-echo ""
-echo "  The fibonacci demo above ran arbitrary Python in sandbox-exec."
-echo "  If someone tried to run 'python3 -c ...' via shell, OPA would deny"
-echo "  it because python3 is not in the command allowlist."
-echo ""
-
-submit_and_show "Shell deny: python3 not in allowed_commands" \
-    "run python3 -c 'print(55)'"
-
-echo "  The same code ran freely via sandbox-exec because the Wazero VM"
-echo "  is the trust boundary, not the OPA command allowlist."
-echo ""
+submit_and_show "File-ops path escape: write to /etc/shadow (outside AllowedPaths)" \
+    "write hacked to /etc/shadow"
 
 # ══════════════════════════════════════════════════════════════════════════════
 box "BINARY CAPABILITY ANALYSIS"

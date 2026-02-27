@@ -66,6 +66,25 @@ The email-read agent receives a mock inbox where one email contains a prompt inj
 2. **Network isolation**: No HTTP capability, no `allowed_hosts`, no WASI sockets
 3. **Secret scoping**: The responder agent (which produces the user-facing reply) runs in a separate WASM instance with no `email_api_key` in its config
 
+### Email reply pipeline with jailbreak detection
+
+A composed email-reply workflow submitted as a single task. The `EmailReplyBuilder` produces a 3-step plan:
+
+```
+email-read → [OPA policy gate] → responder → email-send
+```
+
+The jailbreak detection is not a separate step — it is the OPA policy evaluation that fires before the responder step. The policy checks `prior_results.skill_output` (the email-read output) for injection patterns in the target email (identified by `reply_to_index` in the task context). Patterns are configurable in `data.json` under `jailbreak_patterns`.
+
+Two scenarios run in the demo:
+
+| Scenario | Target email | Policy gate | Responder | Send |
+|---|---|---|---|---|
+| **A (happy path)** | `emails[0]` — alice, Q3 Planning (clean) | allowed | LLM drafts reply | Delivered |
+| **B (blocked)** | `emails[2]` — prompt injection attempt | **denied** | Never runs | Never runs |
+
+In Scenario B, the responder step is denied by OPA — the LLM never sees the injected content, and no reply is drafted or sent. The lifecycle shows: `✓ email-read` → `✗ responder denied`.
+
 ### Sandboxed code execution (Python-in-WASM)
 
 The sandbox-exec agent runs LLM-generated Python inside a Wazero instance. The runtime binary comes from [vmware-labs/webassembly-language-runtimes](https://github.com/vmware-labs/webassembly-language-runtimes) (VMware, SHA256-verified). Compiled modules are cached; each invocation gets an isolated instance with its own memory, filesystem mounts, and stdio. No network access (WASI preview-1 has no sockets).
@@ -117,8 +136,9 @@ POST /message { message: "calculate fibonacci of 10" }
 
 - `agents.json` — agent registry: WASM binary names, capabilities, host functions, payload field mappings
 - `data.json` — OPA external data: command allowlists, path allowlists, language allowlists, feature flags
-- `policy.rego` — step policy: per-agent authorization rules, shell hardening helpers, config injection
-- `submit.rego` — submission policy: restricts task types to `chat`
-- `policy_test.rego` / `submit_test.rego` — 51 OPA unit tests proving security properties statically
+- `policy.rego` — step policy: per-agent authorization, shell hardening, email-reply jailbreak gate
+- `jailbreak.rego` — standalone jailbreak scanner for ad-hoc `opa eval` use (enforcement is in policy.rego)
+- `submit.rego` — submission policy: accepts `chat` and `email-reply` task types
+- `policy_test.rego` / `submit_test.rego` / `jailbreak_test.rego` — 69 OPA unit tests proving security properties statically
 - `Makefile` — `make demo` / `make demo-api` / `make demo-real` (build + run), `make test-policy` (OPA tests only), `make clean`
 - `run.sh` — builds, starts services, runs OPA tests, then exercises every agent and security boundary

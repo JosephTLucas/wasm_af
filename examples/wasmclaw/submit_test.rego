@@ -23,3 +23,9 @@ test_empty_type_denied if {
 test_arbitrary_type_denied if {
 	not allow with input as {"task_type": "evil-task"}
 }
+
+# ── Functionality: email-reply tasks are accepted ────────────────────────────
+
+test_email_reply_allowed if {
+	allow with input as {"task_type": "email-reply"}
+}

@@ -72,6 +72,7 @@ func run(logger *slog.Logger) error {
 	planBuilders := NewPlanBuilderRegistry()
 	RegisterDefaultBuilders(planBuilders)
 	planBuilders.Register("chat", ChatBuilder{})
+	planBuilders.Register("email-reply", EmailReplyBuilder{})
 
 	// ── HOST FUNCTION REGISTRY ──────────────────────────────────────────────
 	hostFns := NewHostFnRegistry()
