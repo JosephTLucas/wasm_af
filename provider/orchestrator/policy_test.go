@@ -299,8 +299,8 @@ func TestOPA_NilEvaluator(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.Permitted {
-		t.Error("expected allow for nil policy submit")
+	if r.Permitted {
+		t.Error("expected deny for nil policy submit (fail closed)")
 	}
 }
 

@@ -266,10 +266,14 @@ func (o *Orchestrator) evaluateStepPolicy(
 }
 
 // evaluateSubmitPolicy runs the wasm_af.submit policy for task submission.
-// Defaults to allow when no policy is loaded.
+// Returns deny-all when no policy is loaded (fail closed).
 func (o *Orchestrator) evaluateSubmitPolicy(ctx context.Context, taskType, query string, taskCtx map[string]string) (*PolicyResult, error) {
 	if o.policy == nil {
-		return &PolicyResult{Permitted: true}, nil
+		return &PolicyResult{
+			Permitted:   false,
+			DenyCode:    strPtr("no-policy"),
+			DenyMessage: strPtr("no OPA policy loaded; deny-all"),
+		}, nil
 	}
 
 	input := map[string]any{

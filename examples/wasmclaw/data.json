@@ -1,0 +1,14 @@
+{
+  "config": {
+    "allowed_skills": ["web-search", "shell", "file-ops", "sandbox-exec", "direct-answer"],
+    "allowed_commands": ["ls", "cat", "pwd", "echo", "find", "date", "uname", "wc", "head", "tail"],
+    "allowed_paths": ["/tmp/wasmclaw"],
+    "allowed_languages": ["python"],
+    "allowed_task_types": ["chat"],
+    "web_search_enabled": true,
+    "shell_enabled": true,
+    "file_ops_enabled": true,
+    "sandbox_exec_enabled": true
+  },
+  "secrets": {}
+}

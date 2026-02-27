@@ -1,0 +1,72 @@
+{
+  "memory": {
+    "wasm_name": "memory",
+    "capability": "kv",
+    "context_key": "memory_context",
+    "host_functions": ["kv_get", "kv_put"],
+    "payload_fields": {
+      "op":    "step.params.op",
+      "key":   "step.params.key",
+      "value": "step.params.value"
+    }
+  },
+  "router": {
+    "wasm_name": "router",
+    "capability": "llm",
+    "context_key": "router_output",
+    "host_functions": ["llm_complete"],
+    "payload_fields": {
+      "message": "task.context.message",
+      "history": "step.params.history"
+    }
+  },
+  "shell": {
+    "wasm_name": "shell",
+    "capability": "shell",
+    "context_key": "skill_output",
+    "host_functions": ["exec_command"],
+    "payload_fields": {
+      "command": "step.params.command"
+    }
+  },
+  "file-ops": {
+    "wasm_name": "file_ops",
+    "capability": "file",
+    "context_key": "skill_output",
+    "host_functions": [],
+    "payload_fields": {
+      "op":      "step.params.op",
+      "path":    "step.params.path",
+      "content": "step.params.content"
+    }
+  },
+  "web-search": {
+    "wasm_name": "web_search",
+    "capability": "http",
+    "context_key": "web_search_results",
+    "host_functions": [],
+    "payload_fields": {
+      "query": "step.params.query",
+      "count": 5
+    }
+  },
+  "responder": {
+    "wasm_name": "responder",
+    "capability": "llm",
+    "context_key": "response",
+    "host_functions": ["llm_complete"],
+    "payload_fields": {
+      "message": "task.context.message"
+    }
+  },
+  "sandbox-exec": {
+    "wasm_name": "sandbox_exec",
+    "capability": "sandbox",
+    "context_key": "skill_output",
+    "host_functions": ["sandbox_exec"],
+    "payload_fields": {
+      "code":     "step.params.code",
+      "language": "step.params.language"
+    }
+  }
+}

@@ -1,31 +1,64 @@
-.PHONY: build build-orchestrator build-plugins test demo clean help
+.PHONY: build build-orchestrator build-plugins build-gateway wasmclaw test demo clean help
 
 BINDIR := bin
 
 ##@ Build
 
-build: build-orchestrator build-plugins ## Build everything
+build: build-orchestrator build-plugins build-gateway ## Build everything
 
 build-orchestrator: ## Build Go orchestrator binary
 	@mkdir -p $(BINDIR)
 	go build -o $(BINDIR)/orchestrator ./provider/orchestrator/
 
+build-gateway: ## Build webhook-gateway binary
+	@mkdir -p $(BINDIR)
+	go build -o $(BINDIR)/webhook-gateway ./cmd/webhook-gateway/
+
 build-plugins: ## Build Rust WASM plugins (Extism)
 	@cd components && cargo build --release
 	@echo "WASM plugins built in components/target/wasm32-unknown-unknown/release/"
 
+wasmclaw: ## Build wasmclaw agents (router, shell, file-ops, memory, responder, sandbox-exec) + gateway + runtimes
+	@mkdir -p $(BINDIR)
+	@# router, shell, memory, responder, sandbox-exec: no WASI stdlib needed → unknown-unknown
+	@cd components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec
+	@# file-ops: uses std::fs via WASI filesystem API → wasip1
+	@cd components && cargo build --release -p file-ops --target wasm32-wasip1
+	@cp components/target/wasm32-wasip1/release/file_ops.wasm \
+		components/target/wasm32-unknown-unknown/release/file_ops.wasm
+	go build -o $(BINDIR)/orchestrator ./provider/orchestrator/
+	go build -o $(BINDIR)/webhook-gateway ./cmd/webhook-gateway/
+	@# Download Python WASM runtime for sandbox-exec (if not already present)
+	@if [ ! -f runtimes/python.wasm ]; then bash runtimes/build.sh; fi
+	@echo "wasmclaw build complete."
+	@echo "  WASM (unknown-unknown): router, shell, memory, responder, sandbox-exec"
+	@echo "  WASM (wasip1 → copied): file_ops"
+	@echo "  Sandbox runtime: runtimes/python.wasm"
+	@echo "  Gateway: $(BINDIR)/webhook-gateway"
+
 ##@ Test
 
-test: ## Run Go unit tests
-	go test ./pkg/...
+test: ## Run all Go unit tests (orchestrator + pkg)
+	go test ./provider/orchestrator/ ./pkg/...
 
 test-plugins: ## Run Rust plugin unit tests (native target override)
 	@cd components && cargo test --target "$$(rustc -vV | grep host | awk '{print $$2}')"
+
+test-policy: ## Run OPA policy tests for all examples
+	@command -v opa >/dev/null 2>&1 || (echo "Error: opa not installed" && exit 1)
+	@for d in examples/*/; do \
+		if ls "$$d"*_test.rego >/dev/null 2>&1; then \
+			echo "=== $$d ===" && opa test "$$d" -v; \
+		fi; \
+	done
 
 ##@ Run
 
 demo: build ## Run the fan-out-summarizer example end-to-end
 	./examples/fan-out-summarizer/run.sh
+
+wasmclaw-demo: wasmclaw ## Build and run the wasmclaw demo
+	./examples/wasmclaw/run.sh
 
 ##@ Util
 

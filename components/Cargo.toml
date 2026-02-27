@@ -5,6 +5,12 @@ members = [
     "agents/web-search",
     "agents/summarizer",
     "agents/url-fetch",
+    "agents/router",
+    "agents/shell",
+    "agents/file-ops",
+    "agents/memory",
+    "agents/responder",
+    "agents/sandbox-exec",
 ]
 
 [profile.release]

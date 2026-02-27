@@ -1,3 +1,5 @@
+.claude/*
+
 # Go
 bin/
 *.test
@@ -6,7 +8,15 @@ vendor/
 
 # Rust / WASM
 target/
-*.wasm
+
+# Stale binaries (before bin/ convention)
+/orchestrator
+/webhook-gateway
+
+# Sandbox runtimes (downloaded, not checked in)
+runtimes/*.wasm
+runtimes/python-lib/
+runtimes/.build/
 
 # OS
 .DS_Store

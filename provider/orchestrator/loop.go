@@ -11,6 +11,22 @@ import (
 	"github.com/jolucas/wasm-af/pkg/taskstate"
 )
 
+// routerOutput mirrors the JSON returned by the router WASM agent.
+type routerOutput struct {
+	Skill  string       `json:"skill"`
+	Params routerParams `json:"params"`
+}
+
+type routerParams struct {
+	Query    string `json:"query"`
+	Command  string `json:"command"`
+	Path     string `json:"path"`
+	Content  string `json:"content"`
+	Op       string `json:"op"`
+	Code     string `json:"code"`
+	Language string `json:"language"`
+}
+
 // runTask is the main agent loop for a task. It runs in its own goroutine.
 func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 	log := o.logger.With("task_id", taskID)
@@ -55,10 +71,24 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 				i++
 			}
 		} else {
+			stepAgentType := state.Plan[i].AgentType
 			if err := o.runStep(ctx, state, i); err != nil {
 				log.Error("step failed", "step_id", state.Plan[i].ID, "err", err)
 				o.failTask(ctx, taskID, fmt.Sprintf("step %s failed: %v", state.Plan[i].ID, err))
 				return
+			}
+			// After a router step completes, reload state (runStep stored the
+			// output) then validate and splice the skill step.
+			if stepAgentType == "router" {
+				state, err = o.store.Get(ctx, taskID)
+				if err != nil {
+					log.Error("failed to reload state for splice", "err", err)
+					o.failTask(ctx, taskID, "state reload failed")
+					return
+				}
+				if err := o.spliceRoutedStep(ctx, state, i); err != nil {
+					log.Warn("routing splice failed, continuing without skill step", "err", err)
+				}
 			}
 			i++
 		}
@@ -348,4 +378,124 @@ func (o *Orchestrator) contextKeyForAgent(agentType string) string {
 		return agentType + "_result"
 	}
 	return meta.ContextKey
+}
+
+// spliceRoutedStep reads the router output, validates the proposed skill
+// against OPA, and splices a concrete skill step into the plan immediately
+// after the router step. If the skill is "direct-answer" or policy denies it,
+// no step is added and the responder receives only prior context.
+func (o *Orchestrator) spliceRoutedStep(ctx context.Context, state *taskstate.TaskState, routerIdx int) error {
+	routerStep := state.Plan[routerIdx]
+	routerJSON, ok := state.Results[routerStep.OutputKey]
+	if !ok {
+		return fmt.Errorf("router output not found in results")
+	}
+
+	var route routerOutput
+	if err := json.Unmarshal([]byte(routerJSON), &route); err != nil {
+		return fmt.Errorf("parse router output: %w", err)
+	}
+
+	// direct-answer means no skill step needed.
+	if route.Skill == "" || route.Skill == "direct-answer" {
+		return nil
+	}
+
+	taskID := state.TaskID
+
+	// Policy gate: evaluate the proposed skill splice (fail closed).
+	if o.policy == nil {
+		_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+			TaskID:        taskID,
+			EventType:     taskstate.EventPolicyDeny,
+			PolicySource:  "wasm-af:router-splice",
+			PolicyDenyMsg: "no policy loaded; deny-all",
+			Message:       fmt.Sprintf("proposed skill %q denied: no policy loaded", route.Skill),
+		})
+		o.logger.Warn("router-splice denied: no policy loaded", "skill", route.Skill)
+		return nil
+	}
+
+	policyInput := map[string]any{
+		"step": map[string]any{
+			"agent_type": "router-splice",
+			"params": map[string]any{
+				"proposed_skill": route.Skill,
+			},
+		},
+		"task": map[string]any{
+			"id":   taskID,
+			"type": state.Context["type"],
+		},
+	}
+	result, err := o.policy.EvaluateStep(ctx, policyInput)
+	if err != nil {
+		return fmt.Errorf("router-splice policy: %w", err)
+	}
+	if !result.Permitted {
+		denyMsg := "denied"
+		if result.DenyMessage != nil {
+			denyMsg = *result.DenyMessage
+		}
+		_ = o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+			TaskID:        taskID,
+			EventType:     taskstate.EventPolicyDeny,
+			PolicySource:  "wasm-af:router-splice",
+			PolicyDenyMsg: denyMsg,
+			Message:       fmt.Sprintf("proposed skill %q denied by policy", route.Skill),
+		})
+		o.logger.Warn("router-splice denied by policy", "skill", route.Skill, "deny", denyMsg)
+		return nil // not a task error — just skip the skill
+	}
+
+	// Build step params from the router's extracted fields.
+	params := make(map[string]string)
+	switch route.Skill {
+	case "web-search":
+		if route.Params.Query != "" {
+			params["query"] = route.Params.Query
+		}
+	case "shell":
+		if route.Params.Command != "" {
+			params["command"] = route.Params.Command
+		}
+	case "file-ops":
+		if route.Params.Op != "" {
+			params["op"] = route.Params.Op
+		}
+		if route.Params.Path != "" {
+			params["path"] = route.Params.Path
+		}
+		if route.Params.Content != "" {
+			params["content"] = route.Params.Content
+		}
+	case "sandbox-exec":
+		if route.Params.Code != "" {
+			params["code"] = route.Params.Code
+		}
+		if route.Params.Language != "" {
+			params["language"] = route.Params.Language
+		}
+	}
+
+	skillStepID := fmt.Sprintf("%s-skill", taskID)
+	newStep := taskstate.Step{
+		ID:        skillStepID,
+		AgentType: route.Skill,
+		InputKey:  skillStepID + ".input",
+		OutputKey: skillStepID + ".output",
+		Status:    taskstate.StepPending,
+		Params:    params,
+	}
+
+	// Splice into the plan via CAS update.
+	return o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
+		insertAt := routerIdx + 1
+		newPlan := make([]taskstate.Step, 0, len(s.Plan)+1)
+		newPlan = append(newPlan, s.Plan[:insertAt]...)
+		newPlan = append(newPlan, newStep)
+		newPlan = append(newPlan, s.Plan[insertAt:]...)
+		s.Plan = newPlan
+		return nil
+	})
 }

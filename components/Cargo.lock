@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "agent-types"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.102"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -111,6 +119,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-ops"
+version = "0.1.0"
+dependencies = [
+ "agent-types",
+ "extism-pdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -171,21 +189,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "memory"
+version = "0.1.0"
+dependencies = [
+ "agent-types",
+ "extism-pdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "num-traits"
 version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "policy-engine"
-version = "0.1.0"
-dependencies = [
- "extism-pdk",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -250,6 +269,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "responder"
+version = "0.1.0"
+dependencies = [
+ "agent-types",
+ "extism-pdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rmp"
 version = "0.8.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -266,6 +295,26 @@ checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
 dependencies = [
  "rmp",
  "serde",
+]
+
+[[package]]
+name = "router"
+version = "0.1.0"
+dependencies = [
+ "agent-types",
+ "extism-pdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "sandbox-exec"
+version = "0.1.0"
+dependencies = [
+ "agent-types",
+ "extism-pdk",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -312,6 +361,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "shell"
+version = "0.1.0"
+dependencies = [
+ "agent-types",
+ "extism-pdk",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.15.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -321,6 +380,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 name = "summarizer"
 version = "0.1.0"
 dependencies = [
+ "agent-types",
  "extism-pdk",
  "serde",
  "serde_json",
@@ -377,6 +437,7 @@ checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 name = "url-fetch"
 version = "0.1.0"
 dependencies = [
+ "agent-types",
  "extism-pdk",
  "serde",
  "serde_json",
@@ -386,6 +447,7 @@ dependencies = [
 name = "web-search"
 version = "0.1.0"
 dependencies = [
+ "agent-types",
  "extism-pdk",
  "serde",
  "serde_json",

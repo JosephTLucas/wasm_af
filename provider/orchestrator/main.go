@@ -71,6 +71,7 @@ func run(logger *slog.Logger) error {
 
 	planBuilders := NewPlanBuilderRegistry()
 	RegisterDefaultBuilders(planBuilders)
+	planBuilders.Register("chat", ChatBuilder{})
 
 	// ── HOST FUNCTION REGISTRY ──────────────────────────────────────────────
 	hostFns := NewHostFnRegistry()
@@ -92,19 +93,53 @@ func run(logger *slog.Logger) error {
 		logger.Info("OPA data loaded", "path", opaDataPath)
 	}
 
-	var policy *OPAEvaluator
-	if opaPolicyPath != "" {
-		modules, err := LoadRegoModules(opaPolicyPath)
-		if err != nil {
-			return fmt.Errorf("load rego policies from %s: %w", opaPolicyPath, err)
+	if opaPolicyPath == "" {
+		return fmt.Errorf("OPA_POLICY is required: policy evaluation gates all agent execution")
+	}
+	modules, err := LoadRegoModules(opaPolicyPath)
+	if err != nil {
+		return fmt.Errorf("load rego policies from %s: %w", opaPolicyPath, err)
+	}
+	policy, err := NewOPAEvaluator(context.Background(), modules, initialData)
+	if err != nil {
+		return fmt.Errorf("init OPA evaluator: %w", err)
+	}
+	logger.Info("OPA policy loaded", "path", opaPolicyPath, "modules", len(modules))
+
+	// Shell host functions — load config from env.
+	shellAllowedCmds := strings.Split(envOr("SHELL_ALLOWED_COMMANDS", "ls,cat,pwd,echo,find,date,uname,wc,head,tail"), ",")
+	shellAllowedPaths := strings.Split(envOr("SHELL_ALLOWED_PATHS", "/tmp/wasmclaw"), ",")
+	hostFns.Register("exec_command", NewShellHostFnProvider(shellAllowedCmds, shellAllowedPaths, logger))
+
+	// Sandbox execution — runs code inside WASM (Wazero), not on the host.
+	sandboxRuntimesDir := envOr("SANDBOX_RUNTIMES_DIR", "./runtimes")
+	sandboxTimeoutSec := envOrInt("SANDBOX_TIMEOUT_SEC", 30)
+	if info, statErr := os.Stat(sandboxRuntimesDir); statErr == nil && info.IsDir() {
+		sandboxEngine, sandboxErr := NewSandboxEngine(
+			context.Background(), sandboxRuntimesDir,
+			time.Duration(sandboxTimeoutSec)*time.Second, logger,
+		)
+		if sandboxErr != nil {
+			return fmt.Errorf("sandbox engine: %w", sandboxErr)
 		}
-		policy, err = NewOPAEvaluator(context.Background(), modules, initialData)
-		if err != nil {
-			return fmt.Errorf("init OPA evaluator: %w", err)
+		defer sandboxEngine.Close(context.Background())
+
+		sandboxLangs := make(map[string]bool)
+		for _, l := range strings.Split(envOr("SANDBOX_ALLOWED_LANGUAGES", "python"), ",") {
+			if l = strings.TrimSpace(l); l != "" {
+				sandboxLangs[l] = true
+			}
 		}
-		logger.Info("OPA policy loaded", "path", opaPolicyPath, "modules", len(modules))
+		sandboxPaths := make(map[string]string)
+		for _, p := range strings.Split(envOr("SANDBOX_ALLOWED_PATHS", "/tmp/wasmclaw"), ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				sandboxPaths[p] = p
+			}
+		}
+		hostFns.Register("sandbox_exec", NewSandboxHostFnProvider(sandboxEngine, sandboxLangs, sandboxPaths, logger))
+		logger.Info("sandbox execution enabled", "runtimes_dir", sandboxRuntimesDir)
 	} else {
-		logger.Warn("OPA_POLICY not set — all step policy evaluations will deny")
+		logger.Info("sandbox execution disabled (SANDBOX_RUNTIMES_DIR not found)", "path", sandboxRuntimesDir)
 	}
 
 	nc, err := nats.Connect(natsURL)
@@ -112,6 +147,11 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("nats connect: %w", err)
 	}
 	defer nc.Close()
+
+	// Memory host functions — require live NATS connection.
+	kvGetProvider, kvPutProvider := NewMemoryHostFnProviders(nc, logger)
+	hostFns.Register("kv_get", kvGetProvider)
+	hostFns.Register("kv_put", kvPutProvider)
 
 	js, err := natsjetstream.New(nc)
 	if err != nil {

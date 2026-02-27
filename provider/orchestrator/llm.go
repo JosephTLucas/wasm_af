@@ -83,6 +83,102 @@ func NewLLMHostFnProvider(mode, baseURL, apiKey, model string, logger *slog.Logg
 }
 
 func mockLLM(req llmRequest) llmResponse {
+	for _, m := range req.Messages {
+		if m.Role == "system" && strings.Contains(m.Content, "routing assistant") {
+			return mockRouterLLM(req)
+		}
+	}
+	return mockEchoLLM(req)
+}
+
+// mockRouterLLM returns valid router JSON so the skill pipeline is exercised.
+func mockRouterLLM(req llmRequest) llmResponse {
+	var userMsg string
+	for _, m := range req.Messages {
+		if m.Role == "user" {
+			userMsg = m.Content
+			break
+		}
+	}
+	if idx := strings.Index(userMsg, "Current message: "); idx >= 0 {
+		userMsg = userMsg[idx+len("Current message: "):]
+	}
+
+	route := mockRoute(strings.TrimSpace(userMsg))
+	b, _ := json.Marshal(route)
+	return llmResponse{Content: string(b), ModelUsed: "mock-router"}
+}
+
+type mockRouteResult struct {
+	Skill  string            `json:"skill"`
+	Params map[string]string `json:"params"`
+}
+
+func mockRoute(msg string) mockRouteResult {
+	lower := strings.ToLower(msg)
+
+	switch {
+	case strings.HasPrefix(lower, "run "):
+		return mockRouteResult{
+			Skill:  "shell",
+			Params: map[string]string{"command": strings.TrimSpace(msg[4:])},
+		}
+
+	case strings.Contains(lower, "list files"):
+		path := "/tmp/wasmclaw"
+		if idx := strings.Index(msg, "/"); idx >= 0 {
+			path = strings.TrimSpace(msg[idx:])
+		}
+		return mockRouteResult{
+			Skill:  "shell",
+			Params: map[string]string{"command": "ls " + path},
+		}
+
+	case strings.Contains(lower, "write") && strings.Contains(msg, " to /"):
+		parts := strings.SplitN(msg, " to /", 2)
+		raw := strings.TrimSpace(parts[0])
+		idx := strings.Index(strings.ToLower(raw), "write ")
+		content := raw
+		if idx >= 0 {
+			content = strings.TrimSpace(raw[idx+6:])
+		}
+		path := "/" + strings.TrimSpace(parts[1])
+		return mockRouteResult{
+			Skill:  "file-ops",
+			Params: map[string]string{"op": "write", "path": path, "content": content},
+		}
+
+	case strings.Contains(lower, "read") && strings.Contains(msg, "/"):
+		idx := strings.Index(msg, "/")
+		path := strings.TrimSpace(msg[idx:])
+		return mockRouteResult{
+			Skill:  "file-ops",
+			Params: map[string]string{"op": "read", "path": path},
+		}
+
+	case strings.Contains(lower, "fibonacci") || strings.Contains(lower, "calculate") || strings.Contains(lower, "compute"):
+		code := "def fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\nprint(fib(10))"
+		return mockRouteResult{
+			Skill:  "sandbox-exec",
+			Params: map[string]string{"language": "python", "code": code},
+		}
+
+	case strings.HasPrefix(lower, "execute bash:"):
+		code := strings.TrimSpace(msg[len("execute bash:"):])
+		return mockRouteResult{
+			Skill:  "sandbox-exec",
+			Params: map[string]string{"language": "bash", "code": code},
+		}
+
+	default:
+		return mockRouteResult{
+			Skill:  "direct-answer",
+			Params: map[string]string{},
+		}
+	}
+}
+
+func mockEchoLLM(req llmRequest) llmResponse {
 	var sb strings.Builder
 	sb.WriteString("[mock-llm summary]\n\n")
 	for _, m := range req.Messages {

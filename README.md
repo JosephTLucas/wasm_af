@@ -159,38 +159,52 @@ wasm_af/
 │   ├── main.go                     # standalone binary, env config, HTTP server
 │   ├── orchestrator.go             # Extism plugin lifecycle, param enrichment
 │   ├── policy.go                   # OPA evaluator (compiles Rego, evaluates per step)
-│   ├── loop.go                     # plan execution, parallel dispatch, generic context merging
+│   ├── loop.go                     # plan execution, parallel dispatch, router splice
 │   ├── hostfns.go                  # host function registry (dynamic, name-based)
+│   ├── hostfns_shell.go            # exec_command: exec.Command + path/binary/metachar gates
+│   ├── hostfns_memory.go           # kv_get/kv_put: NATS JetStream KV
+│   ├── hostfns_sandbox.go          # sandbox_exec: runs code in a nested Wazero instance
 │   ├── llm.go                      # llm_complete host function provider
 │   ├── registry.go                 # agent registry with enrichments
 │   ├── builders.go                 # plan builders (including generic JSON-driven)
+│   ├── builder_chat.go             # chat plan builder (memory → router → splice → responder)
 │   └── taskstate.go                # HTTP handlers
 │
+├── cmd/webhook-gateway/            # lightweight HTTP gateway (chat message → task → poll)
+│
 ├── pkg/taskstate/                  # NATS JetStream KV: task state, audit log, payloads
+│
+├── runtimes/                       # WASI sandbox runtimes (downloaded, not checked in)
+│   ├── build.sh                    # downloads Python WASM from VMware Labs (SHA256-verified)
+│   └── python.wasm                 # CPython 3.12 for wasm32-wasi (gitignored)
 │
 ├── components/                     # Rust workspace — WASM plugins (Extism PDK)
 │   ├── agent-types/                # shared TaskInput/TaskOutput types
 │   ├── agents/
+│   │   ├── router/                 # LLM-based skill router (classifies → skill + params)
+│   │   ├── shell/                  # host command execution via exec_command host fn
+│   │   ├── sandbox-exec/           # sandboxed code execution via sandbox_exec host fn
+│   │   ├── file-ops/               # WASI std::fs (wasm32-wasip1, no host functions)
+│   │   ├── memory/                 # conversation history via kv_get/kv_put
+│   │   ├── responder/              # LLM response generation
 │   │   ├── url-fetch/              # fetches a URL, returns page content
 │   │   ├── web-search/             # calls Brave Search API
-│   │   └── summarizer/             # builds LLM prompt, calls llm_complete host fn
-│
+│   │   └── summarizer/             # builds LLM prompt from search results
 │
 └── examples/
     ├── fan-out-summarizer/         # parallel fetch + summarize demo
-    │   ├── run.sh                  # one command: build + run + display results
-    │   ├── policy.rego             # step policy: data-driven domain checks + resource limits
-    │   ├── submit.rego             # submission policy: allowed task types
-    │   ├── data.json               # OPA external data (domain allowlist, task types)
-    │   ├── policy_test.rego        # OPA tests (runnable with: opa test .)
-    │   └── README.md
-    └── prompt-injection/           # security demo: injection fails structurally
-        ├── run.sh                  # builds, runs Ollama, demonstrates the attack
-        ├── malicious_page.html     # page with hidden injection payload
-        ├── policy.rego             # step policy: restricted agent set
-        ├── submit.rego             # submission policy
-        ├── data.json               # OPA external data
-        ├── Makefile                # pulls model + builds
+    │   ├── run.sh, policy.rego, data.json, README.md, ...
+    │
+    ├── prompt-injection/           # security demo: injection fails structurally
+    │   ├── run.sh, malicious_page.html, policy.rego, Makefile, README.md, ...
+    │
+    └── wasmclaw/                   # personal AI assistant with two-tier execution
+        ├── run.sh                  # builds, runs, exercises every agent + security boundary
+        ├── agents.json             # agent registry (7 agents, capability/host-fn mappings)
+        ├── policy.rego             # shell hardening, sandbox policy, file-ops confinement
+        ├── data.json               # command/path/language allowlists, feature flags
+        ├── policy_test.rego        # 42 OPA tests (metachar, path, language, splice)
+        ├── Makefile                # make demo, make test-policy
         └── README.md
 ```
 
@@ -203,6 +217,14 @@ wasm_af/
 ---
 
 ## Running the Demos
+
+### Wasmclaw (Personal AI Assistant)
+
+Multi-skill chat assistant with two-tier execution: LLM-generated code runs in a Python-in-WASM sandbox (Wazero), while host commands use `exec.Command` with OPA binary/path/metachar gates. The demo exercises every agent and proves each security boundary at runtime.
+
+```bash
+./examples/wasmclaw/run.sh
+```
 
 ### Fan-Out Summarizer
 
@@ -260,17 +282,23 @@ curl localhost:8080/tasks/<task-id> | jq .
 |---|---|---|
 | `WASM_DIR` | `./components/target/wasm32-unknown-unknown/release` | Directory containing compiled `.wasm` plugins |
 | `NATS_URL` | `nats://127.0.0.1:4222` | NATS server address |
-| `OPA_POLICY` | — | Path to a `.rego` file or directory of `.rego` files |
+| `OPA_POLICY` | — | Path to `.rego` file or directory (**required**) |
 | `OPA_DATA` | — | Path to a JSON data file (populates OPA data store at startup) |
 | `AGENT_REGISTRY_FILE` | — | Path to JSON agent registry file (required) |
 | `AGENT_REGISTRY` | — | Inline JSON agent registry (takes precedence over file) |
-| `LLM_MODE` | `mock` | `mock` for echo responses, `real` for upstream LLM |
+| `LLM_MODE` | `mock` | `mock` for context-aware routing, `real` for upstream LLM |
 | `LLM_BASE_URL` | — | OpenAI-compatible API base URL |
 | `LLM_API_KEY` | — | API key for the LLM endpoint |
 | `LLM_MODEL` | `gpt-4o-mini` | Model name for the LLM endpoint |
 | `PLUGIN_TIMEOUT_SEC` | `30` | Max wall-clock seconds per plugin invocation |
 | `PLUGIN_MAX_MEMORY_PAGES` | `256` | Max WASM memory pages per plugin (64 KiB each) |
 | `PLUGIN_MAX_HTTP_BYTES` | `4194304` | Max HTTP response size in bytes per plugin |
+| `SHELL_ALLOWED_COMMANDS` | `ls,cat,pwd,...` | Comma-separated command binary allowlist (host-side defense-in-depth) |
+| `SHELL_ALLOWED_PATHS` | `/tmp/wasmclaw` | Comma-separated path bases for shell argument confinement |
+| `SANDBOX_RUNTIMES_DIR` | `./runtimes` | Directory containing WASI runtime `.wasm` files (e.g. `python.wasm`) |
+| `SANDBOX_TIMEOUT_SEC` | `30` | Max wall-clock seconds per sandboxed code execution |
+| `SANDBOX_ALLOWED_LANGUAGES` | `python` | Comma-separated language allowlist for sandbox-exec |
+| `SANDBOX_ALLOWED_PATHS` | `/tmp/wasmclaw` | Comma-separated host paths mounted into sandbox instances |
 
 ---
 
