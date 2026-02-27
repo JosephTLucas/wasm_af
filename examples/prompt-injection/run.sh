@@ -265,7 +265,7 @@ if [ -n "$WASM_TOOLS" ]; then
     if $WASM_TOOLS print "$SUMMARIZER_WASM" 2>/dev/null | grep -q 'http_request'; then
         echo "     WARNING: http_request found in summarizer — unexpected."
     else
-        echo "     ${GRN}http_request: NOT PRESENT.${RST}"
+        echo "     http_request: NOT PRESENT."
     fi
     echo ""
     echo "     url_fetch.wasm imports (for comparison):"

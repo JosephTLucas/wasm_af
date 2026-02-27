@@ -135,7 +135,7 @@ echo "  ╔═══════════════════════
 echo "  ║        SUBMISSION POLICY GATE (OPA)                  ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo ""
-echo "  → Submitting type='forbidden-task' ${DIM}(not in allowed_task_types)${RST}..."
+echo "  Submitting type='forbidden-task' (not in allowed_task_types)..."
 DENY_BODY=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8080/tasks \
     -H "Content-Type: application/json" \
     -d '{"type":"forbidden-task","query":"this should be rejected"}')
@@ -144,7 +144,7 @@ DENY_MSG=$(echo "$DENY_BODY" | head -1)
 echo "    HTTP status: $DENY_HTTP"
 echo "    Response:    $DENY_MSG"
 if [ "$DENY_HTTP" = "403" ]; then
-    echo "    ${GRN}✓ Rejected before plan is built.${RST}"
+    echo "    ✓ Rejected before plan is built."
 fi
 echo ""
 
@@ -247,9 +247,9 @@ else
         echo ""
         STEP_ERR_LC=$(echo "$STEP_ERR" | tr '[:upper:]' '[:lower:]')
         if [ "$STEP_STATUS" = "failed" ] && ! echo "$STEP_ERR_LC" | grep -q "no rule permits"; then
-            echo "    ${GRN}✓ Blocked by wazero allowed_hosts (not application code).${RST}"
+            echo "    ✓ Blocked by wazero allowed_hosts (not application code)."
         elif [ "$STEP_STATUS" = "denied" ] || echo "$STEP_ERR_LC" | grep -q "no rule permits"; then
-            echo "    ${DIM}Denied by OPA before plugin instantiation.${RST}"
+            echo "    Denied by OPA before plugin instantiation."
         fi
     fi
     fi
@@ -316,7 +316,7 @@ else
         STEP_ERR=$(echo "$DENY_STATE" | jq -r '.plan[0].error // ""')
         echo "    url-fetch step: $STEP_STATUS"
         [ -n "$STEP_ERR" ] && echo "    reason: $STEP_ERR"
-        [ "$STEP_STATUS" = "denied" ] && echo "    ${GRN}✓ Denied — no WASM loaded.${RST}"
+        [ "$STEP_STATUS" = "denied" ] && echo "    ✓ Denied — no WASM loaded."
     fi
     echo ""
 
@@ -383,7 +383,7 @@ else
     echo ""
 
     if [ "$R_STATUS" = "completed" ]; then
-        echo "    ${GRN}✓ Completed.${RST} Add brave_api_key to data.json for real search results."
+        echo "    ✓ Completed. Add brave_api_key to data.json for real search results."
     else
         echo "  Research task status: $R_STATUS"
         [ "$R_STATUS" = "failed" ] && echo "  Error: $(echo "$R_STATE" | jq -r '.error')"
