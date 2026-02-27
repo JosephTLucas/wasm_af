@@ -1,0 +1,14 @@
+{
+  "config": {
+    "allowed_domains": [
+      "webassembly.org",
+      "wasmcloud.com",
+      "bytecodealliance.org"
+    ],
+    "allowed_task_types": [
+      "fan-out-summarizer",
+      "research",
+      "isolation-test"
+    ]
+  }
+}

@@ -12,7 +12,7 @@ Custom URLs:
 URLS="https://example.com,https://httpbin.org" ./examples/fan-out-summarizer/run.sh
 ```
 
-Prerequisites: Rust, Go 1.24+, jq, and either `nats-server` or `wash` (for its bundled NATS). The `nats` CLI ([natscli](https://github.com/nats-io/natscli)) is optional but required for the live allow-list demo section.
+Prerequisites: Rust, Go 1.25+, jq, and either `nats-server` or `wash` (for its bundled NATS). The `nats` CLI ([natscli](https://github.com/nats-io/natscli)) is optional but required for the live allow-list demo section.
 
 ---
 
@@ -20,7 +20,7 @@ Prerequisites: Rust, Go 1.24+, jq, and either `nats-server` or `wash` (for its b
 
 **Per-instance capability scoping.** Each url-fetch plugin gets its own Extism manifest with `allowed_hosts` set to exactly one domain. The runtime rejects HTTP requests to any other host before they leave the sandbox. Instance A physically cannot reach Instance B's domain.
 
-**Policy gating.** The policy engine — itself a WASM plugin — evaluates every step before a plugin is instantiated. Deny-by-default: if there's no matching rule, the step doesn't run. The policy engine has no access to task data or credentials.
+**Policy gating.** The OPA policy engine evaluates every step before a plugin is instantiated. Deny-by-default Rego policies: if there's no matching rule, the step doesn't run.
 
 **Physical capability isolation.** The summarizer receives an `llm_complete` host function. The url-fetch plugins do not — the function doesn't exist in their WASM instances. The summarizer has no HTTP capability. These aren't advisory rules; they're what's in each plugin's manifest.
 
@@ -54,5 +54,8 @@ POST /tasks { type: "fan-out-summarizer", urls: "A,B,C" }
 
 ## Files
 
-- `policies.json` — deny-by-default policy rules
+- `policy.rego` — step policy: data-driven domain checks, resource limits, allowed_hosts scoping
+- `submit.rego` — submission policy: restricts which task types are allowed
+- `data.json` — OPA external data: domain allowlist and allowed task types
+- `policy_test.rego` / `submit_test.rego` — OPA tests (run with `opa test .`)
 - `run.sh` — builds, starts, runs, and displays the demo

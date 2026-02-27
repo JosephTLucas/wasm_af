@@ -40,11 +40,6 @@ type Step struct {
 	// Group value that are contiguous in the plan are started concurrently.
 	Group string `json:"group,omitempty"`
 
-	// AllowedHosts overrides the orchestrator-level allowed_hosts for this
-	// step's HTTP capability link. Used to scope each parallel fetch instance
-	// to a single domain.
-	AllowedHosts string `json:"allowed_hosts,omitempty"`
-
 	// Params carries step-specific parameters that buildStepPayload reads.
 	// For url-fetch steps this contains {"url": "https://..."}.
 	Params map[string]string `json:"params,omitempty"`

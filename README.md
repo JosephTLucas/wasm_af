@@ -13,7 +13,7 @@ WASM_AF leverages the sandboxed, ephemeral nature of WebAssembly to create a zer
 ./examples/fan-out-summarizer/run.sh
 ```
 
-Prerequisites: [Rust](https://rustup.rs/), [Go](https://go.dev/) 1.24+, [NATS server](https://nats.io/) (or [wash](https://wasmcloud.com/docs/installation/) which bundles one), [jq](https://jqlang.github.io/jq/).
+Prerequisites: [Rust](https://rustup.rs/), [Go](https://go.dev/) 1.25+, [NATS server](https://nats.io/) (or [wash](https://wasmcloud.com/docs/installation/) which bundles one), [jq](https://jqlang.github.io/jq/).
 
 ---
 
@@ -65,10 +65,13 @@ WASM_AF is built on the premise that this is exactly the runtime model AI agents
 │  │  • WASM sandbox (no ambient authority)│                   │
 │  └───────────────────────────────────────┘                   │
 │                                                              │
-│  ┌──────────────────┐                                        │
-│  │  Policy Engine   │  WASM plugin, deny-by-default          │
-│  │  (policy.wasm)   │  evaluated before every step           │
-│  └──────────────────┘                                        │
+│  ┌──────────────────────────────────────────┐                   │
+│  │  OPA Policy Engine (embedded)           │                   │
+│  │  • data.wasm_af.authz — step policy     │                   │
+│  │  • data.wasm_af.submit — submit policy  │                   │
+│  │  • data store ← NATS KV live updates    │                   │
+│  │  • structured decisions (overrides)     │                   │
+│  └──────────────────────────────────────────┘                   │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -86,28 +89,27 @@ An agent does not declare what it needs — the **orchestrator decides what it g
 
 When a task requires a url-fetch agent, the orchestrator:
 
-1. Evaluates the policy engine (itself a WASM plugin — immutable, auditable)
-2. Creates an Extism plugin with `allowed_hosts` scoped to the target domain
-3. Calls the agent's `execute` export
-4. Destroys the plugin — along with its capabilities and any in-memory data
+1. Evaluates the OPA step policy (`wasm_af.authz`) with full task/step/agent context
+2. Reads structured decisions from the policy — `allowed_hosts`, `max_memory_pages`, `timeout_sec`
+3. Creates an Extism plugin with exactly the capabilities the policy granted
+4. Calls the agent's `execute` export
+5. Destroys the plugin — along with its capabilities and any in-memory data
 
-The agent's HTTP access is enforced by the Extism runtime, not application code. The allow-list isn't advisory — it's the only network the agent can reach.
+The agent's HTTP access is enforced by the Extism runtime, not application code. The domain allowlist, the allowed_hosts scoping, and the resource limits are all expressed in Rego — one language, one decision point.
 
 ### 2. Per-Instance Capability Scoping
 
 Each plugin instance gets its own Extism manifest. In the fan-out example, three url-fetch instances run in parallel — one scoped to `webassembly.org`, one to `wasmcloud.com`, one to `bytecodealliance.org`. Instance A literally cannot reach Instance B's domain. The runtime rejects the request before it leaves the sandbox.
 
-The allowlist contents are controlled server-side via NATS KV — never populated from the task request itself. A submitted URL whose domain is absent is denied before any plugin is instantiated. The allowlist is stored in NATS KV and watched live by the orchestrator — it can be updated without restarting:
+The allowlist is data-driven: `data.config.allowed_domains` in the OPA data store, populated from `data.json` at startup. NATS KV watches push live updates into the OPA store — the orchestrator picks them up on the next policy evaluation, no restart needed:
 
 ```bash
-# Restrict to specific domains
+# Update the domain allowlist live (pushed into OPA data store automatically)
 nats kv put wasm-af-config allowed-fetch-domains "webassembly.org,wasmcloud.com,bytecodealliance.org"
 
-# Open/dev mode — no domain restrictions
+# Clear all domain restrictions
 nats kv del wasm-af-config allowed-fetch-domains
 ```
-
-`URL_FETCH_ALLOWED_DOMAINS` seeds the KV entry on first run if the key is absent. After that, the KV value is authoritative.
 
 ### 3. Zero-Trust Inter-Agent Communication
 
@@ -147,6 +149,7 @@ wasm_af/
 ├── provider/orchestrator/          # the framework — Go binary
 │   ├── main.go                     # standalone binary, env config, HTTP server
 │   ├── orchestrator.go             # Extism plugin lifecycle (create → call → destroy)
+│   ├── policy.go                   # OPA evaluator (compiles Rego, evaluates per step)
 │   ├── loop.go                     # plan execution, parallel dispatch, context merging
 │   ├── taskstate.go                # HTTP handlers, plan building
 │   └── llm.go                      # LLM host function (mock + real OpenAI)
@@ -159,24 +162,31 @@ wasm_af/
 │   │   ├── url-fetch/              # fetches a URL, returns page content
 │   │   ├── web-search/             # calls Brave Search API
 │   │   └── summarizer/             # builds LLM prompt, calls llm_complete host fn
-│   └── policy-engine/              # deny-by-default policy evaluation
+│
 │
 └── examples/
     ├── fan-out-summarizer/         # parallel fetch + summarize demo
     │   ├── run.sh                  # one command: build + run + display results
-    │   ├── policies.json           # policy rules for the demo
+    │   ├── policy.rego             # step policy: data-driven domain checks + resource limits
+    │   ├── submit.rego             # submission policy: allowed task types
+    │   ├── data.json               # OPA external data (domain allowlist, task types)
+    │   ├── policy_test.rego        # OPA tests (runnable with: opa test .)
     │   └── README.md
     └── prompt-injection/           # security demo: injection fails structurally
         ├── run.sh                  # builds, runs Ollama, demonstrates the attack
         ├── malicious_page.html     # page with hidden injection payload
-        ├── policies.json           # policy rules
+        ├── policy.rego             # step policy: restricted agent set
+        ├── submit.rego             # submission policy
+        ├── data.json               # OPA external data
         ├── Makefile                # pulls model + builds
         └── README.md
 ```
 
 **Go for the orchestrator.** It's a coordination problem — HTTP API, NATS, goroutine fan-out, plugin lifecycle management. The Extism Go SDK (wazero) is pure Go with no CGO, so the binary cross-compiles cleanly.
 
-**Rust for plugins.** Agents and the policy engine compile to WASM via `wasm32-unknown-unknown`. Rust produces tiny binaries (~150KB), and the Extism Rust PDK provides HTTP, config, and host function access with minimal boilerplate. Shared types (`TaskInput`, `TaskOutput`, `KVPair`) live in the `agent-types` crate to avoid duplication.
+**Rust for plugins.** Agents compile to WASM via `wasm32-unknown-unknown`. Rust produces tiny binaries (~150KB), and the Extism Rust PDK provides HTTP, config, and host function access with minimal boilerplate. Shared types (`TaskInput`, `TaskOutput`, `KVPair`) live in the `agent-types` crate to avoid duplication.
+
+**OPA for policy.** The [Open Policy Agent](https://www.openpolicyagent.org/) Go library evaluates Rego policies natively in the orchestrator. Two decision points: `wasm_af.authz` (step execution — deny-by-default) and `wasm_af.submit` (task submission). Policies are data-driven: the domain allowlist lives in OPA's data store, updated live from NATS KV without restart. Structured decisions let policy shape *how* plugins run (resource limits, network scoping), not just *whether* they run. Policies are testable with `opa test`.
 
 ---
 
@@ -211,12 +221,10 @@ go build -o ./bin/orchestrator ./provider/orchestrator/
 nats-server -js &
 
 # 3. Run orchestrator
-# URL_FETCH_ALLOWED_DOMAINS seeds NATS KV on first run; after that, update live with:
-#   nats kv put wasm-af-config allowed-fetch-domains "domain1,domain2"
-POLICY_RULES_FILE=./examples/fan-out-summarizer/policies.json \
+OPA_POLICY=./examples/fan-out-summarizer \
+OPA_DATA=./examples/fan-out-summarizer/data.json \
 AGENT_REGISTRY_FILE=./examples/fan-out-summarizer/agents.json \
 LLM_MODE=mock \
-URL_FETCH_ALLOWED_DOMAINS=webassembly.org,wasmcloud.com,bytecodealliance.org \
 ./bin/orchestrator &
 
 # 4. Submit task
@@ -240,15 +248,14 @@ curl localhost:8080/tasks/<task-id> | jq .
 |---|---|---|
 | `WASM_DIR` | `./components/target/wasm32-unknown-unknown/release` | Directory containing compiled `.wasm` plugins |
 | `NATS_URL` | `nats://127.0.0.1:4222` | NATS server address |
-| `POLICY_RULES_FILE` | — | Path to JSON policy rules file |
-| `POLICY_RULES` | — | Inline JSON policy rules (takes precedence over file) |
+| `OPA_POLICY` | — | Path to a `.rego` file or directory of `.rego` files |
+| `OPA_DATA` | — | Path to a JSON data file (populates OPA data store at startup) |
 | `AGENT_REGISTRY_FILE` | — | Path to JSON agent registry file (required) |
 | `AGENT_REGISTRY` | — | Inline JSON agent registry (takes precedence over file) |
 | `LLM_MODE` | `mock` | `mock` for echo responses, `real` for upstream LLM |
 | `LLM_BASE_URL` | — | OpenAI-compatible API base URL |
 | `LLM_API_KEY` | — | API key for the LLM endpoint |
 | `LLM_MODEL` | `gpt-4o-mini` | Model name for the LLM endpoint |
-| `URL_FETCH_ALLOWED_DOMAINS` | — | Comma-separated domain allowlist (seeds NATS KV on first run) |
 | `PLUGIN_TIMEOUT_SEC` | `30` | Max wall-clock seconds per plugin invocation |
 | `PLUGIN_MAX_MEMORY_PAGES` | `256` | Max WASM memory pages per plugin (64 KiB each) |
 | `PLUGIN_MAX_HTTP_BYTES` | `4194304` | Max HTTP response size in bytes per plugin |

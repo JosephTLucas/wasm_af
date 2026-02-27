@@ -1,0 +1,11 @@
+{
+  "config": {
+    "allowed_domains": [
+      "localhost"
+    ],
+    "allowed_task_types": [
+      "fan-out-summarizer",
+      "research"
+    ]
+  }
+}

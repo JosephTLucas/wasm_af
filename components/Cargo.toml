@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "agent-types",
-    "policy-engine",
     "agents/web-search",
     "agents/summarizer",
     "agents/url-fetch",

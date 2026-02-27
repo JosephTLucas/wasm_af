@@ -3,7 +3,7 @@
 #
 # Builds everything, starts NATS, runs the orchestrator, and demonstrates:
 #   - per-instance capability scoping (each WASM sandbox gets exactly one domain)
-#   - policy gating (deny-by-default WASM plugin evaluated before every step)
+#   - policy gating (OPA/Rego deny-by-default, data-driven domain checks)
 #   - physical capability isolation (missing imports, not advisory rules)
 #   - live allow-list enforcement (NATS KV update, no restart)
 #
@@ -95,11 +95,11 @@ if lsof -ti:8080 >/dev/null 2>&1; then
     sleep 1
 fi
 
-POLICY_RULES_FILE="$ROOT/examples/fan-out-summarizer/policies.json" \
+OPA_POLICY="$ROOT/examples/fan-out-summarizer" \
+OPA_DATA="$ROOT/examples/fan-out-summarizer/data.json" \
 AGENT_REGISTRY_FILE="$ROOT/examples/fan-out-summarizer/agents.json" \
 LLM_MODE=mock \
 WASM_DIR="$ROOT/components/target/wasm32-unknown-unknown/release" \
-URL_FETCH_ALLOWED_DOMAINS="webassembly.org,wasmcloud.com,bytecodealliance.org" \
     ./bin/orchestrator > /tmp/wasm-af-orchestrator.log 2>&1 &
 ORCH_PID=$!
 sleep 2
@@ -231,10 +231,10 @@ echo ""
 
 # ── Policy engine ──────────────────────────────────────────────────────────────
 echo "  ╔══════════════════════════════════════════════════════╗"
-echo "  ║        POLICY ENGINE (itself a WASM plugin)         ║"
+echo "  ║        POLICY ENGINE (OPA / Rego)                   ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo ""
-echo "  The policy engine (policy_engine.wasm) evaluated one request per step:"
+echo "  OPA evaluated one policy decision per step (deny-by-default Rego policy):"
 echo ""
 echo "$STATE" | jq -r '
     .plan[] | select(.agent_type == "url-fetch") |
@@ -244,8 +244,7 @@ echo "$STATE" | jq -r '
     "    wasm-af:\(.agent_type)  →  llm    →  PERMITTED"'
 echo ""
 echo "  Policy is deny-by-default. Any capability not listed above is denied."
-echo "  The policy engine is itself a sandboxed WASM instance — its rules can't"
-echo "  be bypassed by an agent and it has no access to task data or credentials."
+echo "  The Rego policy is compiled once at startup and evaluated natively in Go."
 echo ""
 
 # ── Dynamic allow list ─────────────────────────────────────────────────────────
@@ -253,13 +252,13 @@ echo "  ╔═══════════════════════
 echo "  ║        LIVE ALLOW LIST (NATS KV, no restart)        ║"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo ""
-echo "  Two distinct enforcement layers:"
-echo "    1. Server-side allow list (NATS KV) — checked before plugin instantiation."
-echo "       If the domain is absent, buildPlan() marks the step 'denied' and"
-echo "       runStep() is never called. No plugin is created. No WASM executes."
-echo "    2. Per-instance allowed_hosts (Extism) — shown above in the main task."
-echo "       The plugin IS instantiated and your Rust code runs. HTTP calls to"
-echo "       unlisted hosts fail inside the sandbox at the network layer."
+echo "  Two distinct enforcement layers, unified through OPA:"
+echo "    1. Domain allowlist (NATS KV → OPA data store → Rego policy)."
+echo "       data.config.allowed_domains is checked by the Rego policy before"
+echo "       plugin instantiation. NATS KV updates push into OPA live."
+echo "    2. Per-instance allowed_hosts (Extism) — set by the Rego policy."
+echo "       The policy returns allowed_hosts=[domain], enforced by wazero."
+echo "       HTTP calls to unlisted hosts fail inside the sandbox."
 echo ""
 
 if ! command -v nats >/dev/null 2>&1; then
@@ -304,7 +303,7 @@ else
         echo "    url-fetch step: $STEP_STATUS"
         [ -n "$STEP_ERR" ] && echo "    reason: $STEP_ERR"
         if [ "$STEP_STATUS" = "denied" ]; then
-            echo "    buildPlan() marked this step denied. runStep() was never called."
+            echo "    OPA denied this step — domain not in data.config.allowed_domains."
             echo "    extism.NewPlugin() was never called. Zero WASM bytecode executed."
         fi
     fi

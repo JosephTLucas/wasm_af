@@ -1,6 +1,6 @@
 // Command orchestrator is the WASM_AF orchestrator.
 // It embeds the Extism WASM runtime to instantiate agent plugins on demand,
-// evaluates policy, manages the task lifecycle, and drives the
+// evaluates policy via OPA, manages the task lifecycle, and drives the
 // plan -> dispatch -> collect -> iterate agent loop.
 package main
 
@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,16 +43,8 @@ func main() {
 func run(logger *slog.Logger) error {
 	wasmDir := envOr("WASM_DIR", "./components/target/wasm32-unknown-unknown/release")
 	natsURL := envOr("NATS_URL", defaultNatsURL)
-	policyRulesJSON := os.Getenv("POLICY_RULES")
-	if policyRulesJSON == "" {
-		if path := os.Getenv("POLICY_RULES_FILE"); path != "" {
-			b, err := os.ReadFile(path)
-			if err != nil {
-				return fmt.Errorf("read policy rules file: %w", err)
-			}
-			policyRulesJSON = string(b)
-		}
-	}
+	opaPolicyPath := os.Getenv("OPA_POLICY")
+	opaDataPath := os.Getenv("OPA_DATA")
 	llmMode := envOr("LLM_MODE", "mock")
 	llmBaseURL := envOr("LLM_BASE_URL", "")
 	llmAPIKey := envOr("LLM_API_KEY", "")
@@ -83,10 +76,30 @@ func run(logger *slog.Logger) error {
 	planBuilders := NewPlanBuilderRegistry()
 	RegisterDefaultBuilders(planBuilders)
 
-	// URL_FETCH_ALLOWED_DOMAINS seeds the NATS KV entry on first run.
-	// After that, the live value in KV is authoritative and can be updated
-	// without restarting: nats kv put wasm-af-config allowed-fetch-domains "a.com,b.com"
-	seedDomains := os.Getenv("URL_FETCH_ALLOWED_DOMAINS")
+	// ── OPA POLICY + DATA ────────────────────────────────────────────────────
+	var initialData map[string]any
+	if opaDataPath != "" {
+		initialData, err = LoadDataFile(opaDataPath)
+		if err != nil {
+			return fmt.Errorf("load OPA data from %s: %w", opaDataPath, err)
+		}
+		logger.Info("OPA data loaded", "path", opaDataPath)
+	}
+
+	var policy *OPAEvaluator
+	if opaPolicyPath != "" {
+		modules, err := LoadRegoModules(opaPolicyPath)
+		if err != nil {
+			return fmt.Errorf("load rego policies from %s: %w", opaPolicyPath, err)
+		}
+		policy, err = NewOPAEvaluator(context.Background(), modules, initialData)
+		if err != nil {
+			return fmt.Errorf("init OPA evaluator: %w", err)
+		}
+		logger.Info("OPA policy loaded", "path", opaPolicyPath, "modules", len(modules))
+	} else {
+		logger.Warn("OPA_POLICY not set — all step policy evaluations will deny")
+	}
 
 	nc, err := nats.Connect(natsURL)
 	if err != nil {
@@ -116,22 +129,11 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("config KV: %w", err)
 	}
 
-	// Seed allowed-fetch-domains from env var on first run (key absent in KV).
-	if seedDomains != "" {
-		if _, err := configKV.Get(ctx, "allowed-fetch-domains"); err != nil {
-			if _, putErr := configKV.Put(ctx, "allowed-fetch-domains", []byte(seedDomains)); putErr != nil {
-				logger.Warn("failed to seed allowed-fetch-domains in KV", "err", putErr)
-			} else {
-				logger.Info("seeded allowed-fetch-domains from env", "domains", seedDomains)
-			}
-		}
-	}
-
 	orch := &Orchestrator{
 		logger:               logger,
 		store:                store,
 		wasmDir:              wasmDir,
-		policyRulesJSON:      policyRulesJSON,
+		policy:               policy,
 		registry:             registry,
 		builders:             planBuilders,
 		ctx:                  ctx,
@@ -144,13 +146,19 @@ func run(logger *slog.Logger) error {
 		pluginMaxHTTPBytes:   pluginMaxHTTPBytes,
 	}
 
-	// Synchronously load the current allowlist before accepting requests.
-	if entry, err := configKV.Get(ctx, "allowed-fetch-domains"); err == nil {
-		orch.setAllowedFetchDomains(string(entry.Value()))
-		logger.Info("loaded allowed-fetch-domains from KV", "domains", string(entry.Value()))
+	// Synchronously load the current allowlist from NATS KV into OPA data store.
+	if policy != nil {
+		if entry, err := configKV.Get(ctx, "allowed-fetch-domains"); err == nil {
+			domains := parseDomainCSV(string(entry.Value()))
+			if err := policy.UpdateData(ctx, "/config/allowed_domains", domains); err != nil {
+				logger.Error("failed to seed allowed_domains in OPA", "err", err)
+			} else {
+				logger.Info("loaded allowed-fetch-domains from KV into OPA", "count", len(domains))
+			}
+		}
 	}
 
-	// Watch for live updates — no restart needed to change the allowlist.
+	// Watch for live updates — pushes domain allowlist changes into OPA data store.
 	go func() {
 		watcher, err := configKV.Watch(ctx, "allowed-fetch-domains")
 		if err != nil {
@@ -167,17 +175,25 @@ func run(logger *slog.Logger) error {
 					return
 				}
 				if update == nil {
-					// Marker: initial values fully delivered; now in live-watch mode.
+					continue
+				}
+				if policy == nil {
 					continue
 				}
 				switch update.Operation() {
 				case natsjetstream.KeyValueDelete, natsjetstream.KeyValuePurge:
-					orch.setAllowedFetchDomains("")
-					logger.Info("allowed-fetch-domains cleared — no domain restrictions")
+					if err := policy.UpdateData(ctx, "/config/allowed_domains", []string{}); err != nil {
+						logger.Error("failed to clear allowed_domains in OPA", "err", err)
+					} else {
+						logger.Info("allowed-fetch-domains cleared in OPA — no domain restrictions")
+					}
 				default:
-					csv := string(update.Value())
-					orch.setAllowedFetchDomains(csv)
-					logger.Info("allowed-fetch-domains updated", "domains", csv)
+					domains := parseDomainCSV(string(update.Value()))
+					if err := policy.UpdateData(ctx, "/config/allowed_domains", domains); err != nil {
+						logger.Error("failed to update allowed_domains in OPA", "err", err)
+					} else {
+						logger.Info("allowed-fetch-domains updated in OPA", "count", len(domains))
+					}
 				}
 			}
 		}
@@ -210,11 +226,21 @@ func run(logger *slog.Logger) error {
 
 	<-sigCh
 	logger.Info("shutdown requested")
-	cancel() // stop the KV watcher goroutine
+	cancel()
 
 	shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutCancel()
 	return srv.Shutdown(shutCtx)
+}
+
+func parseDomainCSV(csv string) []string {
+	var domains []string
+	for _, d := range strings.Split(csv, ",") {
+		if d = strings.TrimSpace(d); d != "" {
+			domains = append(domains, d)
+		}
+	}
+	return domains
 }
 
 func envOr(key, fallback string) string {

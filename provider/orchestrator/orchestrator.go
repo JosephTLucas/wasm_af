@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"strings"
-	"sync"
 	"time"
 
 	extism "github.com/extism/go-sdk"
@@ -18,12 +16,12 @@ import (
 // Orchestrator is the central coordinator. It embeds the Extism WASM runtime
 // and manages task state via NATS JetStream KV.
 type Orchestrator struct {
-	logger          *slog.Logger
-	store           *taskstate.Store
-	wasmDir         string // directory containing compiled .wasm plugins
-	policyRulesJSON string // JSON policy rules passed to the policy engine plugin
-	registry        *AgentRegistry
-	builders        *PlanBuilderRegistry
+	logger   *slog.Logger
+	store    *taskstate.Store
+	wasmDir  string // directory containing compiled .wasm plugins
+	policy   *OPAEvaluator
+	registry *AgentRegistry
+	builders *PlanBuilderRegistry
 
 	// ctx is the server-lifetime context, cancelled on SIGINT/SIGTERM.
 	// Task goroutines derive from this so in-flight work stops on shutdown.
@@ -42,39 +40,6 @@ type Orchestrator struct {
 	pluginMaxMemoryPages uint32
 	// pluginMaxHTTPBytes caps the size of any HTTP response a plugin may read.
 	pluginMaxHTTPBytes int64
-
-	// allowedFetchDomains is the server-side domain allowlist for url-fetch steps.
-	// Stored in NATS KV (wasm-af-config / allowed-fetch-domains) and kept in sync
-	// by a live watcher. When non-empty, any url-fetch step whose domain is absent
-	// is denied at plan-build time — before a plugin is instantiated. Empty means
-	// no restriction (dev/open mode). All access must go through fetchDomainAllowed.
-	allowedFetchMu      sync.RWMutex
-	allowedFetchDomains map[string]bool
-}
-
-// setAllowedFetchDomains replaces the in-memory allowlist from a
-// comma-separated string. Called at startup and on every KV update.
-func (o *Orchestrator) setAllowedFetchDomains(csv string) {
-	domains := map[string]bool{}
-	for _, d := range strings.Split(csv, ",") {
-		if d = strings.TrimSpace(d); d != "" {
-			domains[d] = true
-		}
-	}
-	o.allowedFetchMu.Lock()
-	o.allowedFetchDomains = domains
-	o.allowedFetchMu.Unlock()
-}
-
-// fetchDomainAllowed reports whether domain is permitted for url-fetch steps.
-// Returns true when no allowlist is configured (open/dev mode).
-func (o *Orchestrator) fetchDomainAllowed(domain string) bool {
-	o.allowedFetchMu.RLock()
-	defer o.allowedFetchMu.RUnlock()
-	if len(o.allowedFetchDomains) == 0 {
-		return true
-	}
-	return o.allowedFetchDomains[domain]
 }
 
 // TaskInput is the JSON structure passed to every agent plugin.
@@ -96,19 +61,27 @@ type TaskOutput struct {
 	Metadata []KVPair `json:"metadata"`
 }
 
-// PolicyRequest is the JSON input to the policy engine plugin.
-type PolicyRequest struct {
-	Source     string `json:"source"`
-	Target     string `json:"target"`
-	Capability string `json:"capability"`
-	TaskID     string `json:"task_id"`
+// PolicyResult is the outcome of an OPA policy evaluation. Beyond the
+// allow/deny decision, it may carry structured overrides that shape how
+// the plugin is instantiated (resource limits, network scoping).
+type PolicyResult struct {
+	Permitted    bool     `json:"permitted"`
+	DenyCode     *string  `json:"deny_code,omitempty"`
+	DenyMessage  *string  `json:"deny_message,omitempty"`
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
+	MaxMemPages  *uint32  `json:"max_memory_pages,omitempty"`
+	MaxHTTPBytes *int64   `json:"max_http_bytes,omitempty"`
+	TimeoutSec   *int     `json:"timeout_sec,omitempty"`
 }
 
-// PolicyResult is the JSON output from the policy engine plugin.
-type PolicyResult struct {
-	Permitted   bool    `json:"permitted"`
-	DenyCode    *string `json:"deny_code"`
-	DenyMessage *string `json:"deny_message"`
+// PluginOpts carries per-step overrides for plugin creation,
+// potentially set by policy decisions.
+type PluginOpts struct {
+	AllowedHosts  []string
+	HostFunctions []extism.HostFunction
+	MaxMemPages   uint32
+	MaxHTTPBytes  int64
+	Timeout       time.Duration
 }
 
 // wasmPath returns the absolute path to a compiled .wasm plugin.
@@ -118,42 +91,39 @@ func (o *Orchestrator) wasmPath(name string) string {
 
 // invokeAgent creates an Extism plugin from the given WASM binary, calls
 // its "execute" export with the provided TaskInput, and returns the TaskOutput.
-// The plugin is created with the given allowed_hosts (for HTTP scoping) and
-// host functions (for LLM access). The plugin instance is destroyed when
-// this function returns.
+// The plugin is created with the capabilities in opts. The plugin instance is
+// destroyed when this function returns.
 func (o *Orchestrator) invokeAgent(
 	ctx context.Context,
 	wasmName string,
 	input *TaskInput,
-	allowedHosts []string,
-	hostFunctions []extism.HostFunction,
+	opts PluginOpts,
 ) (*TaskOutput, error) {
 	manifest := extism.Manifest{
 		Wasm: []extism.Wasm{
 			extism.WasmFile{Path: o.wasmPath(wasmName)},
 		},
 		Memory: &extism.ManifestMemory{
-			MaxPages:             o.pluginMaxMemoryPages,
-			MaxHttpResponseBytes: o.pluginMaxHTTPBytes,
+			MaxPages:             opts.MaxMemPages,
+			MaxHttpResponseBytes: opts.MaxHTTPBytes,
 		},
 	}
-	if len(allowedHosts) > 0 {
-		manifest.AllowedHosts = allowedHosts
+	if len(opts.AllowedHosts) > 0 {
+		manifest.AllowedHosts = opts.AllowedHosts
 	}
 
-	// Extism PDK uses WASI for fd_write (logging) and clock_time_get.
 	config := extism.PluginConfig{
 		EnableWasi: true,
 	}
 
-	plugin, err := extism.NewPlugin(ctx, manifest, config, hostFunctions)
+	plugin, err := extism.NewPlugin(ctx, manifest, config, opts.HostFunctions)
 	if err != nil {
 		return nil, fmt.Errorf("create plugin %s: %w", wasmName, err)
 	}
 	defer plugin.Close(ctx)
 
-	if o.pluginTimeout > 0 {
-		plugin.Timeout = o.pluginTimeout
+	if opts.Timeout > 0 {
+		plugin.Timeout = opts.Timeout
 	}
 
 	inputJSON, err := json.Marshal(input)
@@ -174,54 +144,76 @@ func (o *Orchestrator) invokeAgent(
 	return &output, nil
 }
 
-// evaluatePolicy creates an Extism policy-engine plugin, calls its "evaluate"
-// export, and returns whether the request is permitted.
-func (o *Orchestrator) evaluatePolicy(
+// evaluateStepPolicy runs the wasm_af.authz policy with rich context
+// about the task, step, agent, and plan. Returns deny-all when no
+// policy is loaded.
+func (o *Orchestrator) evaluateStepPolicy(
 	ctx context.Context,
-	taskID string,
-	stepID string,
-	source, target, capability string,
+	state *taskstate.TaskState,
+	step *taskstate.Step,
+	meta *AgentMeta,
+	stepIdx int,
 ) (*PolicyResult, error) {
-	manifest := extism.Manifest{
-		Wasm: []extism.Wasm{
-			extism.WasmFile{Path: o.wasmPath("policy_engine")},
+	if o.policy == nil {
+		return &PolicyResult{
+			Permitted:   false,
+			DenyCode:    strPtr("no-policy"),
+			DenyMessage: strPtr("no OPA policy loaded; deny-all"),
+		}, nil
+	}
+
+	stepInput := map[string]any{
+		"id":         step.ID,
+		"index":      stepIdx,
+		"agent_type": step.AgentType,
+		"group":      step.Group,
+		"params":     step.Params,
+	}
+	if u, ok := step.Params["url"]; ok {
+		stepInput["domain"] = extractDomain(u)
+	}
+
+	input := map[string]any{
+		"step": stepInput,
+		"agent": map[string]any{
+			"wasm_name":      meta.WasmName,
+			"capability":     meta.Capability,
+			"host_functions": meta.HostFunctions,
 		},
-		Config: map[string]string{
-			"policy-rules": o.policyRulesJSON,
+		"task": map[string]any{
+			"id":         state.TaskID,
+			"type":       state.Context["type"],
+			"created_at": state.CreatedAt,
 		},
-		Memory: &extism.ManifestMemory{
-			MaxPages: o.pluginMaxMemoryPages,
+		"plan": map[string]any{
+			"total_steps":     len(state.Plan),
+			"completed_steps": countCompleted(state),
 		},
 	}
+	return o.policy.EvaluateStep(ctx, input)
+}
 
-	config := extism.PluginConfig{}
-	plugin, err := extism.NewPlugin(ctx, manifest, config, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create policy plugin: %w", err)
-	}
-	defer plugin.Close(ctx)
-
-	req := PolicyRequest{
-		Source:     source,
-		Target:     target,
-		Capability: capability,
-		TaskID:     taskID,
+// evaluateSubmitPolicy runs the wasm_af.submit policy for task submission.
+// Defaults to allow when no policy is loaded.
+func (o *Orchestrator) evaluateSubmitPolicy(ctx context.Context, taskType, query string, taskCtx map[string]string) (*PolicyResult, error) {
+	if o.policy == nil {
+		return &PolicyResult{Permitted: true}, nil
 	}
 
-	inputJSON, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal policy request: %w", err)
+	input := map[string]any{
+		"task_type": taskType,
+		"query":     query,
+		"context":   taskCtx,
 	}
+	return o.policy.EvaluateSubmit(ctx, input)
+}
 
-	_, outputJSON, err := plugin.Call("evaluate", inputJSON)
-	if err != nil {
-		return nil, fmt.Errorf("call evaluate: %w", err)
+func countCompleted(state *taskstate.TaskState) int {
+	n := 0
+	for _, s := range state.Plan {
+		if s.Status == taskstate.StepCompleted {
+			n++
+		}
 	}
-
-	var result PolicyResult
-	if err := json.Unmarshal(outputJSON, &result); err != nil {
-		return nil, fmt.Errorf("unmarshal policy result: %w", err)
-	}
-
-	return &result, nil
+	return n
 }

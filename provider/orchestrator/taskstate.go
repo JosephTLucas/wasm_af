@@ -35,12 +35,28 @@ func (o *Orchestrator) handleSubmitTask(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	taskID := uuid.New().String()
-
-	taskCtx := map[string]string{"query": req.Query}
+	taskCtx := map[string]string{"query": req.Query, "type": req.Type}
 	for k, v := range req.Context {
 		taskCtx[k] = v
 	}
+
+	// ── SUBMIT POLICY GATE ──────────────────────────────────────────────────
+	submitResult, err := o.evaluateSubmitPolicy(r.Context(), req.Type, req.Query, taskCtx)
+	if err != nil {
+		o.logger.Error("submit policy evaluation failed", "err", err)
+		http.Error(w, "policy evaluation error", http.StatusInternalServerError)
+		return
+	}
+	if !submitResult.Permitted {
+		msg := "task submission denied by policy"
+		if submitResult.DenyMessage != nil {
+			msg = *submitResult.DenyMessage
+		}
+		http.Error(w, msg, http.StatusForbidden)
+		return
+	}
+
+	taskID := uuid.New().String()
 
 	plan, err := o.builders.Build(req.Type, taskID, taskCtx, o.registry, o)
 	if err != nil {

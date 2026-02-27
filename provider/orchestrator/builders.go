@@ -74,7 +74,7 @@ func (ResearchBuilder) BuildPlan(taskID string, _ map[string]string, _ *AgentReg
 // followed by a summarizer step.
 type FanOutSummarizerBuilder struct{}
 
-func (FanOutSummarizerBuilder) BuildPlan(taskID string, ctx map[string]string, _ *AgentRegistry, orch *Orchestrator) ([]taskstate.Step, error) {
+func (FanOutSummarizerBuilder) BuildPlan(taskID string, ctx map[string]string, _ *AgentRegistry, _ *Orchestrator) ([]taskstate.Step, error) {
 	raw, ok := ctx["urls"]
 	if !ok || raw == "" {
 		return nil, fmt.Errorf("fan-out-summarizer requires a comma-separated 'urls' key in context")
@@ -94,23 +94,15 @@ func (FanOutSummarizerBuilder) BuildPlan(taskID string, ctx map[string]string, _
 	steps := make([]taskstate.Step, 0, len(urls)+1)
 	for i, u := range urls {
 		n := i + 1
-		domain := extractDomain(u)
-		step := taskstate.Step{
-			ID:           stepID(taskID, n),
-			AgentType:    "url-fetch",
-			InputKey:     stepID(taskID, n) + ".input",
-			OutputKey:    stepID(taskID, n) + ".output",
-			Status:       taskstate.StepPending,
-			Group:        "fetch",
-			AllowedHosts: domain,
-			Params:       map[string]string{"url": u},
-		}
-		if !orch.fetchDomainAllowed(domain) {
-			step.Status = taskstate.StepDenied
-			step.AllowedHosts = ""
-			step.Error = fmt.Sprintf("domain %q is not in the server's URL fetch allow list", domain)
-		}
-		steps = append(steps, step)
+		steps = append(steps, taskstate.Step{
+			ID:        stepID(taskID, n),
+			AgentType: "url-fetch",
+			InputKey:  stepID(taskID, n) + ".input",
+			OutputKey: stepID(taskID, n) + ".output",
+			Status:    taskstate.StepPending,
+			Group:     "fetch",
+			Params:    map[string]string{"url": u},
+		})
 	}
 
 	sumN := len(urls) + 1
@@ -126,29 +118,24 @@ func (FanOutSummarizerBuilder) BuildPlan(taskID string, ctx map[string]string, _
 }
 
 // IsolationTestBuilder creates a url-fetch step with a deliberate mismatch
-// between AllowedHosts and the target URL, used to demonstrate per-instance
-// capability scoping.
+// between the policy-assigned allowed_hosts and the target URL, used to
+// demonstrate per-instance capability scoping. The "restricted_to" param
+// is read by the Rego policy to set allowed_hosts.
 type IsolationTestBuilder struct{}
 
-func (IsolationTestBuilder) BuildPlan(taskID string, ctx map[string]string, _ *AgentRegistry, orch *Orchestrator) ([]taskstate.Step, error) {
+func (IsolationTestBuilder) BuildPlan(taskID string, ctx map[string]string, _ *AgentRegistry, _ *Orchestrator) ([]taskstate.Step, error) {
 	restrictedTo := ctx["restricted_to"]
 	fetchURL := ctx["fetch_url"]
 	if restrictedTo == "" || fetchURL == "" {
 		return nil, fmt.Errorf("isolation-test requires 'restricted_to' and 'fetch_url' in context")
 	}
-	fetchDomain := extractDomain(fetchURL)
 	step := taskstate.Step{
-		ID:           stepID(taskID, 1),
-		AgentType:    "url-fetch",
-		InputKey:     stepID(taskID, 1) + ".input",
-		OutputKey:    stepID(taskID, 1) + ".output",
-		Status:       taskstate.StepPending,
-		AllowedHosts: restrictedTo,
-		Params:       map[string]string{"url": fetchURL},
-	}
-	if !orch.fetchDomainAllowed(fetchDomain) {
-		step.Status = taskstate.StepDenied
-		step.Error = fmt.Sprintf("domain %q is not in the server's URL fetch allow list", fetchDomain)
+		ID:        stepID(taskID, 1),
+		AgentType: "url-fetch",
+		InputKey:  stepID(taskID, 1) + ".input",
+		OutputKey: stepID(taskID, 1) + ".output",
+		Status:    taskstate.StepPending,
+		Params:    map[string]string{"url": fetchURL, "restricted_to": restrictedTo},
 	}
 	return []taskstate.Step{step}, nil
 }

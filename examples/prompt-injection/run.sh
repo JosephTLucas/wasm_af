@@ -131,13 +131,13 @@ if lsof -ti:8080 >/dev/null 2>&1; then
     sleep 1
 fi
 
-POLICY_RULES_FILE="$EXAMPLE_DIR/policies.json" \
+OPA_POLICY="$EXAMPLE_DIR" \
+OPA_DATA="$EXAMPLE_DIR/data.json" \
 AGENT_REGISTRY_FILE="$EXAMPLE_DIR/agents.json" \
 LLM_MODE=real \
 LLM_BASE_URL=http://localhost:11434 \
 LLM_MODEL="$MODEL" \
 WASM_DIR="$ROOT/components/target/wasm32-unknown-unknown/release" \
-URL_FETCH_ALLOWED_DOMAINS="localhost" \
     ./bin/orchestrator > /tmp/wasm-af-orchestrator.log 2>&1 &
 ORCH_PID=$!
 sleep 2

@@ -6,7 +6,7 @@ A web page contains hidden instructions telling the LLM to extract credentials a
 make demo
 ```
 
-Prerequisites: Rust, Go 1.24+, jq, nats-server, [Ollama](https://ollama.com) with `qwen3:1.7b` (pulled automatically by `make demo`).
+Prerequisites: Rust, Go 1.25+, jq, nats-server, [Ollama](https://ollama.com) with `qwen3:1.7b` (pulled automatically by `make demo`).
 
 Custom model:
 ```bash
@@ -45,6 +45,9 @@ In WASM_AF, the defenses are structural. The import table is set at compile time
 ## Files
 
 - `malicious_page.html` — the poisoned page served locally
-- `policies.json` — deny-by-default rules (url-fetch → http, summarizer → llm)
+- `policy.rego` — step policy: url-fetch (data-driven domain check) + summarizer only
+- `submit.rego` — submission policy: allowed task types
+- `data.json` — OPA external data: domain allowlist and allowed task types
+- `policy_test.rego` — OPA tests (run with `opa test .`)
 - `Makefile` — pulls the model and builds before running
 - `run.sh` — the demo

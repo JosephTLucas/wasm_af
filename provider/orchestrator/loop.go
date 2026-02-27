@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	extism "github.com/extism/go-sdk"
-
 	"github.com/jolucas/wasm-af/pkg/taskstate"
 )
 
@@ -143,7 +141,7 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 	// ── POLICY EVALUATION ────────────────────────────────────────────────────
 	policySource := "wasm-af:" + step.AgentType
 
-	result, err := o.evaluatePolicy(ctx, taskID, step.ID, policySource, "*", meta.Capability)
+	result, err := o.evaluateStepPolicy(ctx, state, step, meta, stepIdx)
 	if err != nil {
 		return fmt.Errorf("policy evaluation failed: %w", err)
 	}
@@ -177,16 +175,29 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		log.Error("audit write failed", "event", taskstate.EventPolicyPermit, "err", err)
 	}
 
-	// ── BUILD ALLOWED HOSTS ──────────────────────────────────────────────────
-	var allowedHosts []string
-	if step.AllowedHosts != "" {
-		allowedHosts = []string{step.AllowedHosts}
+	// ── BUILD PLUGIN OPTS (defaults + policy overrides) ─────────────────────
+	opts := PluginOpts{
+		MaxMemPages:  o.pluginMaxMemoryPages,
+		MaxHTTPBytes: o.pluginMaxHTTPBytes,
+		Timeout:      o.pluginTimeout,
 	}
 
-	// ── BUILD HOST FUNCTIONS ─────────────────────────────────────────────────
-	var hostFunctions []extism.HostFunction
+	if len(result.AllowedHosts) > 0 {
+		opts.AllowedHosts = result.AllowedHosts
+	}
+
+	if result.MaxMemPages != nil {
+		opts.MaxMemPages = *result.MaxMemPages
+	}
+	if result.MaxHTTPBytes != nil {
+		opts.MaxHTTPBytes = *result.MaxHTTPBytes
+	}
+	if result.TimeoutSec != nil {
+		opts.Timeout = time.Duration(*result.TimeoutSec) * time.Second
+	}
+
 	if meta.HasHostFunction("llm_complete") {
-		hostFunctions = o.llmHostFunctions()
+		opts.HostFunctions = o.llmHostFunctions()
 	}
 
 	// ── INVOKE AGENT ─────────────────────────────────────────────────────────
@@ -204,7 +215,7 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		return fmt.Errorf("write input payload: %w", err)
 	}
 
-	output, err := o.invokeAgent(ctx, meta.WasmName, input, allowedHosts, hostFunctions)
+	output, err := o.invokeAgent(ctx, meta.WasmName, input, opts)
 	if err != nil {
 		if updateErr := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
 			s.Plan[stepIdx].Status = taskstate.StepFailed
