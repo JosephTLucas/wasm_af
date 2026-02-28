@@ -19,7 +19,7 @@ cd "$ROOT"
 LLM_MODE="${LLM_MODE:-mock}"
 MODEL="${MODEL:-qwen3:4b}"
 NV_API_KEY="${NV_API_KEY:-${LLM_API_KEY:-}}"
-NV_MODEL="${NV_MODEL:-nvdev/nvidia/llama-3.3-nemotron-super-49b-v1}"
+NV_MODEL="${NV_MODEL:-meta/llama-3.3-70b-instruct}"
 
 # ── ANSI colors (disabled when piped or NO_COLOR is set) ─────────────────────
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then

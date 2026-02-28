@@ -1,10 +1,25 @@
 use agent_types::{LlmMessage, LlmRequest, LlmResponse, TaskInput, TaskOutput};
 use extism_pdk::*;
+use serde_json::Value;
+
+/// Extract a single email from the email-read JSON output by index.
+/// Returns a narrowed JSON string containing only that email, or None
+/// if the structure doesn't match (graceful fallback to full context).
+fn scope_email_context(raw: &str, idx: usize) -> Option<String> {
+    let mut doc: Value = serde_json::from_str(raw).ok()?;
+    let emails = doc.get_mut("emails")?.as_array_mut()?;
+    let email = emails.get(idx)?.clone();
+    doc["emails"] = Value::Array(vec![email]);
+    doc["count"] = Value::Number(1.into());
+    serde_json::to_string(&doc).ok()
+}
 
 #[derive(serde::Deserialize)]
 struct ResponderInput {
     #[serde(default)]
     message: String,
+    #[serde(default)]
+    reply_to_index: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -26,12 +41,27 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
         return Err(Error::msg("message field is required and must not be empty").into());
     }
 
-    // Collect all context (prior step outputs) into a block for the LLM.
+    // When reply_to_index is set (parallel reply-all), narrow the email-read
+    // context to just the single email this branch is responsible for. This
+    // avoids feeding jailbreak content from other emails into this LLM call.
+    let email_index: Option<usize> = req
+        .reply_to_index
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .and_then(|s| s.parse().ok());
+
     let mut context_parts: Vec<String> = Vec::new();
     for kv in &input.context {
-        // Skip the raw memory blob — it's history already baked into the prompt.
         if kv.key == "memory_context" {
             continue;
+        }
+        if let Some(idx) = email_index {
+            if kv.key == "skill_output" {
+                if let Some(scoped) = scope_email_context(&kv.val, idx) {
+                    context_parts.push(format!("[{}]\n{}", kv.key, scoped));
+                    continue;
+                }
+            }
         }
         context_parts.push(format!("[{}]\n{}", kv.key, kv.val));
     }

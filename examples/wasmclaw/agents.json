@@ -57,7 +57,8 @@
     "context_key": "response",
     "host_functions": ["llm_complete"],
     "payload_fields": {
-      "message": "task.context.message"
+      "message": "task.context.message",
+      "reply_to_index": "step.params.reply_to_index"
     }
   },
   "sandbox-exec": {

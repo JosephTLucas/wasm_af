@@ -74,7 +74,11 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 
 	spliceCounter := 0
 
+	iteration := 0
 	for {
+		iteration++
+		iterStart := time.Now()
+
 		g, err := buildDAG(state.Plan)
 		if err != nil {
 			log.Error("invalid plan DAG", "err", err)
@@ -106,6 +110,9 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 			}
 		}
 		if len(dispatchable) == 0 {
+			log.Info("dag loop: no dispatchable steps, breaking",
+				"iteration", iteration, "ready_total", len(readyIDs),
+				"non_dispatchable", len(nonDispatchable))
 			break
 		}
 
@@ -117,7 +124,17 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 			}
 		}
 
+		log.Info("dag loop: dispatching batch",
+			"iteration", iteration,
+			"batch_size", len(dispatchable),
+			"steps", dispatchable,
+			"schedule_ms", time.Since(iterStart).Milliseconds())
+
+		batchStart := time.Now()
 		o.runParallelSteps(ctx, state, readyIndices)
+		log.Info("dag loop: batch complete",
+			"iteration", iteration,
+			"batch_ms", time.Since(batchStart).Milliseconds())
 
 		// Reload state after the batch completes (runStep persists results).
 		state, err = o.store.Get(ctx, taskID)
