@@ -19,12 +19,23 @@ allow if {
 }
 
 # ── Email-reply jailbreak gate ───────────────────────────────────────────
+# Reads reply_to_index from step params first (for parallel reply-all
+# branches where each step has its own index), falling back to task context
+# (for single email-reply tasks).
+
+_reply_to_index := to_number(input.step.params.reply_to_index) if {
+	input.step.params.reply_to_index
+}
+
+_reply_to_index := to_number(input.task.context.reply_to_index) if {
+	not input.step.params.reply_to_index
+	input.task.context.reply_to_index
+}
 
 email_reply_jailbreak if {
-	input.task.type == "email-reply"
+	input.task.type in {"email-reply", "reply-all"}
 	email_output := json.unmarshal(input.prior_results.skill_output)
-	idx := to_number(input.task.context.reply_to_index)
-	email := email_output.emails[idx]
+	email := email_output.emails[_reply_to_index]
 	some pattern in data.config.jailbreak_patterns
 	contains(lower(email.body), pattern)
 }
@@ -133,6 +144,40 @@ allow if {
 	input.step.params.proposed_skill in data.config.allowed_skills
 }
 
+# ── Human-in-the-loop approval gates ─────────────────────────────────────
+# Steps that are allowed by policy but require human confirmation before
+# the plugin is created. The orchestrator pauses the step and publishes
+# an approval event; execution resumes only after an explicit approve call.
+
+default requires_approval := false
+
+requires_approval if {
+	data.config.approval_enabled
+	input.step.agent_type == "email-send"
+}
+
+requires_approval if {
+	data.config.approval_enabled
+	input.step.agent_type == "shell"
+	input.step.params.command != ""
+	parts := split(input.step.params.command, " ")
+	not parts[0] in data.config.auto_approved_commands
+}
+
+approval_reason := "email delivery requires human approval" if {
+	data.config.approval_enabled
+	input.step.agent_type == "email-send"
+}
+
+approval_reason := sprintf("shell command '%s' requires approval", [input.step.params.command]) if {
+	data.config.approval_enabled
+	input.step.agent_type == "shell"
+	input.step.params.command != ""
+	parts := split(input.step.params.command, " ")
+	not parts[0] in data.config.auto_approved_commands
+}
+
+# ── Per-agent config overrides ───────────────────────────────────────────
 # Inject per-agent config overrides into the plugin manifest.
 
 # Shell: pass allowed_commands so the host fn can validate defense-in-depth.

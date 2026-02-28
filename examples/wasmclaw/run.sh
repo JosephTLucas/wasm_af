@@ -1,288 +1,48 @@
 #!/usr/bin/env bash
 # wasmclaw — Personal AI Assistant Demo
 #
-# Builds the wasmclaw agents and gateway, starts NATS + Ollama + orchestrator,
-# then runs:
-#   - OPA policy unit tests (security properties proved statically)
-#   - Runtime functionality tests (chat task lifecycle with real LLM routing)
-#   - Runtime security tests (submit gate rejection, binary capability analysis)
-#
-# Skills: web-search, shell, file-ops, email-send, email-read — each sandboxed in WASM, gated by OPA.
-# file-ops uses WASI std::fs (no host fns); Wazero enforces AllowedPaths.
-#
-# Prerequisites: rust (wasm32-unknown-unknown + wasm32-wasip1), go, jq, nats-server
-# Optional: opa CLI (policy tests), wasm-tools (binary analysis), ollama (LLM_MODE=real)
-#
 # Usage:
-#   make demo                        (recommended — pulls model, builds, runs)
-#   LLM_MODE=api make demo           (NVIDIA NIM API — needs NV_API_KEY in .env)
+#   make demo                        (recommended — mock LLM)
+#   LLM_MODE=api make demo           (NVIDIA NIM API — needs NV_API_KEY)
 #   LLM_MODE=real make demo          (local Ollama)
-#   ./examples/wasmclaw/run.sh       (if already built)
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-cd "$ROOT"
-
-[ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
-[ -f "$ROOT/.env" ] && set -a && . "$ROOT/.env" && set +a
-
-LLM_MODE="${LLM_MODE:-mock}"
-MODEL="${MODEL:-qwen3:4b}"
-NV_API_KEY="${NV_API_KEY:-${LLM_API_KEY:-}}"
-NV_MODEL="${NV_MODEL:-nvdev/nvidia/llama-3.3-nemotron-super-49b-v1}"
-
-# ── ANSI colors (disabled when piped or NO_COLOR is set) ─────────────────────
-if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
-    RST=$'\033[0m'  BLD=$'\033[1m'  DIM=$'\033[2m'
-    RED=$'\033[31m'  GRN=$'\033[32m'  YLW=$'\033[33m'  CYN=$'\033[36m'
-    BRED=$'\033[1;31m'  BGRN=$'\033[1;32m'  BCYN=$'\033[1;36m'
-else
-    RST=""  BLD=""  DIM=""
-    RED=""  GRN=""  YLW=""  CYN=""
-    BRED=""  BGRN=""  BCYN=""
-fi
-
-case "$LLM_MODE" in
-    api)  LLM_LABEL="API" ;;
-    real) LLM_LABEL="Ollama" ;;
-    *)    LLM_LABEL="Mock" ;;
-esac
-
-box() {
-    echo "  ${BCYN}╔══════════════════════════════════════════════════════╗${RST}"
-    printf "  ${BCYN}║${RST}  ${BLD}%-52s${RST}${BCYN}║${RST}\n" "$1"
-    echo "  ${BCYN}╚══════════════════════════════════════════════════════╝${RST}"
-}
-
-EXAMPLE_DIR="$ROOT/examples/wasmclaw"
-ORCH_PID=""
-GW_PID=""
-NATS_PID=""
-NATS_STARTED_BY_US=""
-NATS_STORE_DIR=""
-OLLAMA_PID=""
-OLLAMA_STARTED_BY_US=""
-
-cleanup() {
-    [ -n "$GW_PID" ]   && kill "$GW_PID"   2>/dev/null || true
-    [ -n "$ORCH_PID" ] && kill "$ORCH_PID" 2>/dev/null || true
-    [ -n "$OLLAMA_STARTED_BY_US" ] && [ -n "$OLLAMA_PID" ] && \
-        kill "$OLLAMA_PID" 2>/dev/null || true
-    if [ -n "$NATS_STARTED_BY_US" ] && [ -n "$NATS_PID" ]; then
-        kill "$NATS_PID" 2>/dev/null || true
-        [ -n "$NATS_STORE_DIR" ] && rm -rf "$NATS_STORE_DIR" 2>/dev/null || true
-    fi
-}
-trap cleanup EXIT
-
-die() { echo "  ${BRED}ERROR:${RST} $1" >&2; exit 1; }
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$SCRIPT_DIR/lib/setup.sh"
 
 echo ""
 box "WASM_AF — wasmclaw Demo"
 echo ""
 
-# ── 1. Build ──────────────────────────────────────────────────────────────────
-echo "  ${BLD}[1/6]${RST} Building..."
-
-if ! rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-unknown; then
-    echo "        Adding wasm32-unknown-unknown target..."
-    rustup target add wasm32-unknown-unknown || die "Failed to add wasm32-unknown-unknown target."
-fi
-if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
-    echo "        Adding wasm32-wasip1 target..."
-    rustup target add wasm32-wasip1 || die "Failed to add wasm32-wasip1 target."
-fi
-
-(cd components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec -p email-send -p email-read -p web-search 2>&1) \
-    || die "Rust build failed (unknown-unknown agents)."
-(cd components && cargo build --release -p file-ops --target wasm32-wasip1 2>&1) \
-    || die "Rust build failed (file-ops)."
-cp components/target/wasm32-wasip1/release/file_ops.wasm \
-    components/target/wasm32-unknown-unknown/release/file_ops.wasm
-
-# Download sandbox runtimes (Python from VMware Labs).
-RUNTIMES_DIR="$ROOT/runtimes"
-if [ ! -f "$RUNTIMES_DIR/python.wasm" ]; then
-    echo "        Downloading sandbox runtimes..."
-    bash "$RUNTIMES_DIR/build.sh" 2>&1 | sed 's/^/        /' || \
-        echo "        (sandbox runtime download failed — sandbox-exec will be disabled)"
-fi
-
-go build -o ./bin/orchestrator ./provider/orchestrator/ 2>&1 || die "Go orchestrator build failed."
-go build -o ./bin/webhook-gateway ./cmd/webhook-gateway/ 2>&1 || die "Go gateway build failed."
-echo "        ${GRN}Done.${RST}"
-echo ""
-
-# ── 2. Check LLM backend ──────────────────────────────────────────────────────
-if [ "$LLM_MODE" = "api" ]; then
-    echo "  ${BLD}[2/6]${RST} LLM backend: ${CYN}API${RST} (NVIDIA NIM)"
-    [ -n "$NV_API_KEY" ] || die "LLM_MODE=api requires NV_API_KEY (or LLM_API_KEY). Export it or add to .env"
-    echo "        Model: ${CYN}$NV_MODEL${RST}"
-    echo "        Endpoint: ${DIM}https://integrate.api.nvidia.com/v1${RST}"
-elif [ "$LLM_MODE" = "real" ]; then
-    echo "  ${BLD}[2/6]${RST} LLM backend: ${CYN}Ollama${RST} ($MODEL)"
-    command -v ollama >/dev/null 2>&1 || die "ollama not found. Install from https://ollama.com"
-    ollama show "$MODEL" >/dev/null 2>&1 || die "$MODEL not pulled. Run: make pull-model"
-
-    if ! curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
-        echo "        Starting ollama serve..."
-        ollama serve > /tmp/wasm-af-ollama.log 2>&1 &
-        OLLAMA_PID=$!
-        OLLAMA_STARTED_BY_US="1"
-        sleep 3
-        curl -sf http://localhost:11434/api/tags >/dev/null 2>&1 || \
-            { cat /tmp/wasm-af-ollama.log; die "Ollama failed to start."; }
-    fi
-    echo "        ${GRN}Ollama ready.${RST}"
-else
-    echo "  ${BLD}[2/6]${RST} LLM backend: ${YLW}Mock${RST} ${DIM}(set LLM_MODE=api or LLM_MODE=real)${RST}"
-fi
-echo ""
-
-# ── 3. Start NATS ─────────────────────────────────────────────────────────────
-echo "  ${BLD}[3/6]${RST} Starting NATS..."
-
-if lsof -i :4222 -sTCP:LISTEN >/dev/null 2>&1; then
-    echo "        NATS already running on :4222"
-else
-    NATS_BIN=""
-    if command -v nats-server >/dev/null 2>&1; then
-        NATS_BIN="nats-server"
-    elif [ -x "$HOME/.local/share/wash/downloads/nats-server" ]; then
-        NATS_BIN="$HOME/.local/share/wash/downloads/nats-server"
-    else
-        die "nats-server not found. Install via: brew install nats-server  OR  run 'wash up' once to download it."
-    fi
-
-    NATS_STORE_DIR="$(mktemp -d /tmp/wasm-af-nats-XXXXXX)"
-    $NATS_BIN -js -sd "$NATS_STORE_DIR" -p 4222 > /tmp/wasm-af-nats.log 2>&1 &
-    NATS_PID=$!
-    NATS_STARTED_BY_US="1"
-    sleep 2
-
-    if ! kill -0 "$NATS_PID" 2>/dev/null; then
-        cat /tmp/wasm-af-nats.log
-        die "NATS failed to start."
-    fi
-    echo "        ${GRN}NATS started${RST} ${DIM}(PID $NATS_PID)${RST}"
-fi
-echo ""
-
-# ── 4. Start services ─────────────────────────────────────────────────────────
-echo "  ${BLD}[4/6]${RST} Starting services..."
-
-rm -rf /tmp/wasmclaw
-mkdir -p /tmp/wasmclaw
-
-if lsof -ti:8080 >/dev/null 2>&1; then
-    echo "        Stopping stale process on :8080..."
-    lsof -ti:8080 | xargs kill 2>/dev/null || true
-    sleep 1
-fi
-
-# Resolve LLM env vars based on mode.
-if [ "$LLM_MODE" = "api" ]; then
-    _LLM_BASE_URL="${LLM_BASE_URL:-https://integrate.api.nvidia.com/v1}"
-    _LLM_API_KEY="$NV_API_KEY"
-    _LLM_MODEL="$NV_MODEL"
-    _LLM_TEMPERATURE="${LLM_TEMPERATURE:-0.2}"
-    _LLM_TOP_P="${LLM_TOP_P:-0.7}"
-else
-    _LLM_BASE_URL="${LLM_BASE_URL:-http://localhost:11434}"
-    _LLM_API_KEY="${LLM_API_KEY:-}"
-    _LLM_MODEL="$MODEL"
-    _LLM_TEMPERATURE="${LLM_TEMPERATURE:-}"
-    _LLM_TOP_P="${LLM_TOP_P:-}"
-fi
-
-_PLUGIN_TIMEOUT="${PLUGIN_TIMEOUT_SEC:-30}"
-if [ "$LLM_MODE" = "api" ] && [ "$_PLUGIN_TIMEOUT" -le 30 ]; then
-    _PLUGIN_TIMEOUT=120
-fi
-
-OPA_POLICY="$EXAMPLE_DIR" \
-OPA_DATA="$EXAMPLE_DIR/data.json" \
-AGENT_REGISTRY_FILE="$EXAMPLE_DIR/agents.json" \
-LLM_MODE="$LLM_MODE" \
-LLM_BASE_URL="$_LLM_BASE_URL" \
-LLM_API_KEY="$_LLM_API_KEY" \
-LLM_MODEL="$_LLM_MODEL" \
-LLM_TEMPERATURE="$_LLM_TEMPERATURE" \
-LLM_TOP_P="$_LLM_TOP_P" \
-PLUGIN_TIMEOUT_SEC="$_PLUGIN_TIMEOUT" \
-WASM_DIR="$ROOT/components/target/wasm32-unknown-unknown/release" \
-SANDBOX_RUNTIMES_DIR="$ROOT/runtimes" \
-SANDBOX_ALLOWED_PATHS="/tmp/wasmclaw" \
-    ./bin/orchestrator > /tmp/wasm-af-orchestrator.log 2>&1 &
-ORCH_PID=$!
-sleep 2
-
-if ! curl -sf http://localhost:8080/healthz >/dev/null 2>&1; then
-    cat /tmp/wasm-af-orchestrator.log
-    die "Orchestrator failed to start."
-fi
-if [ "$LLM_MODE" = "api" ]; then
-    echo "        ${GRN}Orchestrator running${RST} ${DIM}(LLM: $_LLM_MODEL via NVIDIA API)${RST}"
-elif [ "$LLM_MODE" = "real" ]; then
-    echo "        ${GRN}Orchestrator running${RST} ${DIM}(LLM: $MODEL via Ollama)${RST}"
-else
-    echo "        ${GRN}Orchestrator running${RST} ${DIM}(LLM: mock)${RST}"
-fi
-
-if lsof -ti:8081 >/dev/null 2>&1; then
-    echo "        Stopping stale process on :8081..."
-    lsof -ti:8081 | xargs kill 2>/dev/null || true
-    sleep 1
-fi
-
-ORCHESTRATOR_URL=http://localhost:8080 \
-LISTEN_ADDR=:8081 \
-    ./bin/webhook-gateway > /tmp/wasm-af-gateway.log 2>&1 &
-GW_PID=$!
-sleep 1
-
-if ! curl -sf http://localhost:8081/healthz >/dev/null 2>&1; then
-    cat /tmp/wasm-af-gateway.log
-    die "Webhook gateway failed to start."
-fi
-echo "        ${GRN}Webhook gateway running${RST} ${DIM}(PID $GW_PID)${RST}"
-echo ""
-
-# ── 5. OPA unit tests ─────────────────────────────────────────────────────────
-echo "  ${BLD}[5/6]${RST} OPA policy unit tests..."
-echo ""
-
-box "POLICY UNIT TESTS (opa test)"
-echo ""
+# ── OPA unit tests ────────────────────────────────────────────────────────────
+echo "  ${BLD}OPA policy tests...${RST}"
 
 if command -v opa >/dev/null 2>&1; then
-    OPA_EXIT=0
-    opa test "$EXAMPLE_DIR" -v 2>&1 \
-        | sed "s/PASS/${GRN}PASS${RST}/g; s/FAIL/${RED}FAIL${RST}/g" \
-        | sed 's/^/       /' || OPA_EXIT=$?
-    echo ""
+    OPA_OUTPUT=$(opa test "$EXAMPLE_DIR" 2>&1)
+    OPA_EXIT=$?
+    OPA_SUMMARY=$(echo "$OPA_OUTPUT" | tail -1)
     if [ "$OPA_EXIT" -eq 0 ]; then
-        echo "       ${BGRN}All policy tests passed.${RST}"
+        echo "        ${BGRN}$OPA_SUMMARY${RST}"
     else
-        echo "       ${BRED}Some policy tests FAILED — see output above.${RST}"
+        echo "$OPA_OUTPUT" | sed 's/^/       /'
+        echo "        ${BRED}Some policy tests FAILED.${RST}"
     fi
 else
-    echo "       ${YLW}(opa CLI not found — tests skipped)${RST}"
-    echo "       Install: https://www.openpolicyagent.org/docs/latest/#running-opa"
-    echo "       To run manually: opa test $EXAMPLE_DIR -v"
+    echo "        ${YLW}(opa CLI not found — skipped)${RST}"
 fi
 echo ""
 
-# ── 6. Runtime demo ───────────────────────────────────────────────────────────
-echo "  ${BLD}[6/6]${RST} Runtime demo ${DIM}(inference: $LLM_LABEL)${RST}"
+# ── Runtime demo ──────────────────────────────────────────────────────────────
+echo "  ${BLD}Runtime demo${RST} ${DIM}(inference: $LLM_LABEL)${RST}"
 echo ""
 
-# Raw lifecycle lines for a task ID (no header/footer).
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
 _lifecycle_lines() {
     local tid="$1"
     grep "$tid" /tmp/wasm-af-orchestrator.log 2>/dev/null \
-        | jq -r --arg g "$GRN" --arg r "$RED" --arg d "$DIM" --arg R "$RST" --arg b "$BLD" \
-          'select(.msg == "starting step" or .msg == "plugin created" or .msg == "plugin destroyed" or .msg == "step completed" or .msg == "step denied") |
+        | jq -r --arg g "$GRN" --arg r "$RED" --arg y "$YLW" --arg d "$DIM" --arg R "$RST" --arg b "$BLD" \
+          'select(.msg == "starting step" or .msg == "plugin created" or .msg == "plugin destroyed" or .msg == "step completed" or .msg == "step denied" or .msg == "step awaiting approval" or .msg == "step approved" or .msg == "task parked, awaiting approval") |
           if .msg == "starting step" then
             "      \($d)\(.time[11:23])\($R)  \($b)▶\($R) \(.agent_type)"
           elif .msg == "plugin created" then
@@ -290,13 +50,18 @@ _lifecycle_lines() {
           elif .msg == "plugin destroyed" then
             "      \($d)\(.time[11:23])    ↳ wasm destroyed (exec: \(.exec_ms)ms)\($R)"
           elif .msg == "step denied" then
-            "      \($d)\(.time[11:23])\($R)  \($r)✗ \(.agent_type) denied\($R)"
+            "      \($d)\(.time[11:23])\($R)  \($r)✗ \(.agent_type // "step") denied\($R)"
           elif .msg == "step completed" then
             "      \($d)\(.time[11:23])\($R)  \($g)✓ \(.agent_type)\($R)"
+          elif .msg == "step awaiting approval" then
+            "      \($d)\(.time[11:23])\($R)  \($y)⏸ \(.agent_type // "step") awaiting approval\($R) \($d)(\(.reason // ""))\($R)"
+          elif .msg == "step approved" then
+            "      \($d)\(.time[11:23])\($R)  \($g)✓ approved\($R) \($d)(by \(.approved_by // "unknown"))\($R)"
+          elif .msg == "task parked, awaiting approval" then
+            "      \($d)\(.time[11:23])    ↳ task parked — waiting for human decision\($R)"
           else empty end' 2>/dev/null || true
 }
 
-# Helper: extract and display plugin lifecycle events for a task ID.
 show_lifecycle() {
     local tid="$1"
     [ -z "$tid" ] && return
@@ -305,16 +70,41 @@ show_lifecycle() {
     echo ""
 }
 
-# Helper: submit a task, poll for completion, show response and lifecycle.
+DEFAULT_POLL_TIMEOUT=90
+[ "$LLM_MODE" = "api" ] && DEFAULT_POLL_TIMEOUT=180
+
+# Extract the best response from a completed task state JSON.
+# Prefers the responder output; falls back to the last completed step.
+_extract_response() {
+    local state="$1"
+    local resp_key resp
+    resp_key=$(echo "$state" | jq -r '.plan[] | select(.agent_type == "responder") | .output_key' 2>/dev/null)
+    if [ -n "$resp_key" ] && [ "$resp_key" != "null" ]; then
+        resp=$(echo "$state" | jq -r --arg k "$resp_key" '.results[$k] // "{}"' 2>/dev/null \
+            | jq -r '.response // empty' 2>/dev/null)
+        [ -n "$resp" ] && { echo "$resp" | head -c 400; return; }
+    fi
+    # Fallback: last completed step's output (for skill-demo tasks without a responder).
+    local last_key last_val
+    last_key=$(echo "$state" | jq -r '[.plan[] | select(.status == "completed")] | last | .output_key // ""' 2>/dev/null)
+    if [ -n "$last_key" ] && [ "$last_key" != "null" ]; then
+        last_val=$(echo "$state" | jq -r --arg k "$last_key" '.results[$k] // "N/A"' 2>/dev/null)
+        echo "$last_val" | head -c 400
+    else
+        echo "N/A"
+    fi
+}
+
 submit_and_poll() {
-    local label="$1" msg="$2" max_poll="${3:-90}"
+    local label="$1" msg="$2" max_poll="${3:-}" task_type="${4:-chat}"
+    [ -z "$max_poll" ] && max_poll="$DEFAULT_POLL_TIMEOUT"
     echo "  → ${BLD}$label${RST}"
     echo "    ${CYN}▸ $msg${RST}"
 
     local BODY
     BODY=$(curl -sf -X POST http://localhost:8080/tasks \
         -H "Content-Type: application/json" \
-        -d "$(jq -n --arg m "$msg" '{type:"chat",query:$m,context:{message:$m}}')")
+        -d "$(jq -n --arg m "$msg" --arg t "$task_type" '{type:$t,query:$m,context:{message:$m}}')")
 
     local TID
     TID=$(echo "$BODY" | jq -r '.task_id // ""')
@@ -339,11 +129,7 @@ submit_and_poll() {
     printf " %ds${RST}\n" "$elapsed"
 
     if [ "$STATUS" = "completed" ]; then
-        local RESP_KEY RESPONSE
-        RESP_KEY=$(echo "$STATE" | jq -r '.plan[] | select(.agent_type == "responder") | .output_key' 2>/dev/null)
-        RESPONSE=$(echo "$STATE" | jq -r --arg k "$RESP_KEY" '.results[$k] // "{}"' 2>/dev/null \
-            | jq -r '.response // "N/A"' 2>/dev/null | head -c 400)
-        echo "    ${GRN}▹${RST} $RESPONSE"
+        echo "    ${GRN}▹${RST} $(_extract_response "$STATE")"
     elif [ "$STATUS" = "failed" ]; then
         local TASK_ERR
         TASK_ERR=$(echo "$STATE" | jq -r '.error // "unknown"' 2>/dev/null)
@@ -355,56 +141,10 @@ submit_and_poll() {
     show_lifecycle "$TID"
 }
 
-# Helper: submit a task, poll, show status + lifecycle. Used for security tests.
-submit_and_show() {
-    local label="$1" msg="$2" max_poll="${3:-90}"
-    echo "  → ${BLD}$label${RST}"
-    echo "    ${CYN}▸ $msg${RST}"
-    local RESP
-    RESP=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8080/tasks \
-        -H "Content-Type: application/json" \
-        -d "{\"type\":\"chat\",\"query\":\"$msg\",\"context\":{\"message\":\"$msg\"}}")
-    local HTTP BODY TID
-    HTTP=$(echo "$RESP" | tail -1)
-    BODY=$(echo "$RESP" | head -1)
-
-    if [ "$HTTP" != "202" ]; then
-        echo "    ${RED}Submit HTTP $HTTP: $BODY${RST}"
-        echo ""
-        return
-    fi
-
-    TID=$(echo "$BODY" | jq -r '.task_id' 2>/dev/null)
-    local poll_start=$SECONDS
-    printf "    ${DIM}⏱  Inference (%s) " "$LLM_LABEL"
-    local STATE="" STATUS="" i=0
-    while [ $i -lt "$max_poll" ]; do
-        STATE=$(curl -sf "http://localhost:8080/tasks/${TID}" || echo '{}')
-        STATUS=$(echo "$STATE" | jq -r '.status' 2>/dev/null)
-        [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] && break
-        printf "·"
-        sleep 2
-        i=$((i + 2))
-    done
-    local elapsed=$(( SECONDS - poll_start ))
-    printf " %ds${RST}\n" "$elapsed"
-
-    if [ "$STATUS" = "failed" ]; then
-        local ERROR
-        ERROR=$(echo "$STATE" | jq -r '.error // empty' 2>/dev/null)
-        echo "    ${RED}✗ Denied${RST} ${DIM}— $ERROR${RST}"
-    else
-        echo "    ${GRN}✓ $STATUS${RST}"
-    fi
-
-    show_lifecycle "$TID"
-}
-
-# Helper: submit + poll like submit_and_poll but skip lifecycle and store TID
-# in _LAST_TID for combined display.
 _LAST_TID=""
 submit_and_poll_quiet() {
-    local label="$1" msg="$2" max_poll="${3:-90}"
+    local label="$1" msg="$2" max_poll="${3:-}" task_type="${4:-chat}"
+    [ -z "$max_poll" ] && max_poll="$DEFAULT_POLL_TIMEOUT"
     _LAST_TID=""
     echo "  → ${BLD}$label${RST}"
     echo "    ${CYN}▸ $msg${RST}"
@@ -412,7 +152,7 @@ submit_and_poll_quiet() {
     local BODY
     BODY=$(curl -sf -X POST http://localhost:8080/tasks \
         -H "Content-Type: application/json" \
-        -d "$(jq -n --arg m "$msg" '{type:"chat",query:$m,context:{message:$m}}')")
+        -d "$(jq -n --arg m "$msg" --arg t "$task_type" '{type:$t,query:$m,context:{message:$m}}')")
 
     local TID
     TID=$(echo "$BODY" | jq -r '.task_id // ""')
@@ -437,11 +177,7 @@ submit_and_poll_quiet() {
     printf " %ds${RST}\n" "$elapsed"
 
     if [ "$STATUS" = "completed" ]; then
-        local RESP_KEY RESPONSE
-        RESP_KEY=$(echo "$STATE" | jq -r '.plan[] | select(.agent_type == "responder") | .output_key' 2>/dev/null)
-        RESPONSE=$(echo "$STATE" | jq -r --arg k "$RESP_KEY" '.results[$k] // "{}"' 2>/dev/null \
-            | jq -r '.response // "N/A"' 2>/dev/null | head -c 400)
-        echo "    ${GRN}▹${RST} $RESPONSE"
+        echo "    ${GRN}▹${RST} $(_extract_response "$STATE")"
     elif [ "$STATUS" = "failed" ]; then
         local TASK_ERR
         TASK_ERR=$(echo "$STATE" | jq -r '.error // "unknown"' 2>/dev/null)
@@ -450,83 +186,19 @@ submit_and_poll_quiet() {
         echo "    ${YLW}⚠ Timed out after ${max_poll}s (status: $STATUS)${RST}"
     fi
 }
-
-# Helper: submit a task with a raw JSON body, poll for completion, show
-# response (or denial) and lifecycle. Sets _LAST_TID.
-submit_json_and_poll() {
-    local label="$1" json_body="$2" max_poll="${3:-90}"
-    _LAST_TID=""
-    echo "  → ${BLD}$label${RST}"
-
-    local BODY
-    BODY=$(curl -sf -X POST http://localhost:8080/tasks \
-        -H "Content-Type: application/json" \
-        -d "$json_body")
-
-    local TID
-    TID=$(echo "$BODY" | jq -r '.task_id // ""')
-    if [ -z "$TID" ] || [ "$TID" = "null" ]; then
-        echo "    ${RED}(submit failed: $BODY)${RST}"
-        echo ""
-        return
-    fi
-    _LAST_TID="$TID"
-
-    local poll_start=$SECONDS
-    printf "    ${DIM}⏱  Inference (%s) " "$LLM_LABEL"
-    local STATUS="" STATE="" i=0
-    while [ $i -lt "$max_poll" ]; do
-        STATE=$(curl -sf "http://localhost:8080/tasks/${TID}" || echo '{}')
-        STATUS=$(echo "$STATE" | jq -r '.status // "unknown"')
-        [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] && break
-        printf "·"
-        sleep 2
-        i=$((i + 2))
-    done
-    local elapsed=$(( SECONDS - poll_start ))
-    printf " %ds${RST}\n" "$elapsed"
-
-    if [ "$STATUS" = "completed" ]; then
-        local RESP_KEY RESPONSE
-        RESP_KEY=$(echo "$STATE" | jq -r '.plan[] | select(.agent_type == "responder") | .output_key' 2>/dev/null)
-        RESPONSE=$(echo "$STATE" | jq -r --arg k "$RESP_KEY" '.results[$k] // "{}"' 2>/dev/null \
-            | jq -r '.response // "N/A"' 2>/dev/null | head -c 400)
-        echo "    ${GRN}▹${RST} $RESPONSE"
-    elif [ "$STATUS" = "failed" ]; then
-        local TASK_ERR
-        TASK_ERR=$(echo "$STATE" | jq -r '.error // "unknown"' 2>/dev/null)
-        echo "    ${RED}✗ Denied:${RST} $TASK_ERR"
-    else
-        echo "    ${YLW}⚠ Timed out after ${max_poll}s (status: $STATUS)${RST}"
-    fi
-
-    show_lifecycle "$TID"
-}
-
-# ══════════════════════════════════════════════════════════════════════════════
-box "SUBMISSION POLICY GATE"
-echo ""
-echo "  → ${BLD}Submitting type='research'${RST} ${DIM}(not in allowed task types)${RST}..."
-DENY_BODY=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8080/tasks \
-    -H "Content-Type: application/json" \
-    -d '{"type":"research","query":"this should be rejected"}')
-DENY_HTTP=$(echo "$DENY_BODY" | tail -1)
-DENY_MSG=$(echo "$DENY_BODY" | head -1)
-if [ "$DENY_HTTP" = "403" ]; then
-    echo "    HTTP ${RED}$DENY_HTTP${RST}  →  $DENY_MSG"
-    echo "    ${GRN}✓ Rejected at submission time. No plan built. No WASM loaded.${RST}"
-else
-    echo "    HTTP $DENY_HTTP  →  $DENY_MSG"
-    echo "    ${RED}✗ Expected 403 but got $DENY_HTTP${RST}"
-fi
-echo ""
 
 # ══════════════════════════════════════════════════════════════════════════════
 box "SKILL EXECUTION (LLM routes to agents)"
 echo ""
 
 submit_and_poll "Shell agent (exec.Command, path-confined)" \
-    "list files in /tmp/wasmclaw"
+    "list files in /tmp/wasmclaw" "" "skill-demo"
+
+echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+echo ""
+
+submit_and_poll "Sandbox-exec agent (Python-in-WASM via Wazero)" \
+    "calculate fibonacci of 10" "" "skill-demo"
 
 echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 echo ""
@@ -535,12 +207,12 @@ echo "  ${BLD}File-ops: write then read${RST} ${DIM}(WASI std::fs, Wazero Allowe
 echo ""
 
 submit_and_poll_quiet "File-ops write" \
-    "write wasmclaw sandbox test to /tmp/wasmclaw/demo.txt"
+    "write wasmclaw sandbox test to /tmp/wasmclaw/demo.txt" "" "skill-demo"
 WRITE_TID="$_LAST_TID"
 echo ""
 
 submit_and_poll_quiet "File-ops read back" \
-    "read /tmp/wasmclaw/demo.txt"
+    "read /tmp/wasmclaw/demo.txt" "" "skill-demo"
 READ_TID="$_LAST_TID"
 
 echo "    ${DIM}Lifecycle (write → destroy → read):${RST}"
@@ -549,74 +221,178 @@ echo "      ${DIM}────── instance destroyed ── file persists on 
 _lifecycle_lines "$READ_TID"
 echo ""
 
-echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-echo ""
-
-submit_and_poll "Sandbox-exec agent (Python-in-WASM via Wazero)" \
-    "calculate fibonacci of 10"
-
-echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-echo ""
-
-submit_and_poll "Direct answer (no skill step — router returns direct-answer)" \
-    "what is the capital of France?"
-
 # ══════════════════════════════════════════════════════════════════════════════
-box "EMAIL AGENTS (secret isolation)"
+box "SECURITY BOUNDARIES"
 echo ""
 
-submit_and_poll "Email send (host fn — SMTP creds never in WASM)" \
-    "send an email to alice@example.com saying meeting moved to 3pm tomorrow"
+echo "  ${BLD}1. Submission gate${RST} ${DIM}— deny before any plan is built${RST}"
+echo "  → ${BLD}Submitting type='research'${RST} ${DIM}(not in allowed task types)${RST}"
+DENY_BODY=$(curl -s -w "\n%{http_code}" -X POST http://localhost:8080/tasks \
+    -H "Content-Type: application/json" \
+    -d '{"type":"research","query":"this should be rejected"}')
+DENY_HTTP=$(echo "$DENY_BODY" | tail -1)
+DENY_MSG=$(echo "$DENY_BODY" | head -1)
+if [ "$DENY_HTTP" = "403" ]; then
+    echo "    HTTP ${RED}$DENY_HTTP${RST}  →  $DENY_MSG"
+    echo "    ${GRN}✓ Rejected at submission. No plan built. No WASM loaded.${RST}"
+else
+    echo "    HTTP $DENY_HTTP  →  $DENY_MSG"
+    echo "    ${RED}✗ Expected 403 but got $DENY_HTTP${RST}"
+fi
+echo ""
 
 echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 echo ""
 
-submit_and_poll "Email read (OPA-injected API key, sandboxed, contains prompt injection)" \
-    "check my email inbox"
+echo "  ${BLD}2. Step-level deny${RST} ${DIM}— OPA blocks execution at runtime${RST}"
+submit_and_poll "Shell: cat /etc/passwd (path outside allowed_paths)" \
+    "run cat /etc/passwd" "" "skill-demo"
 
-
-# ══════════════════════════════════════════════════════════════════════════════
-box "EMAIL REPLY PIPELINE (jailbreak detection)"
+echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 echo ""
+
+echo "  ${BLD}3. Content-aware deny${RST} ${DIM}— jailbreak detection in email content${RST}"
 echo "  Pipeline: email-read → ${RED}OPA jailbreak gate${RST} → responder → email-send"
 echo ""
 
-# The mock inbox (hardcoded in email-read WASM agent) has 3 emails:
-#   [0] alice@example.com     — Q3 Planning Document (clean)
-#   [1] bob@partner-corp.com  — Re: Integration timeline (clean)
-#   [2] support@legit-saas.com — Action Required (prompt injection)
-#
-# Each scenario submits one email-reply task. The reply_to_index in the
-# task context tells the OPA policy which email to inspect.
+# The mock inbox email at index 2 contains a prompt injection attempt.
+# OPA inspects the email-read output before the responder runs.
+echo "  → ${BLD}Reply to injected email (prompt injection blocked)${RST}"
 
-submit_json_and_poll "Scenario A: Reply to clean email (alice — Q3 Planning)" \
-    '{"type":"email-reply","query":"reply to Q3 planning email","context":{"message":"reply to Q3 planning email","reply_to_index":"0","reply_to":"alice@example.com","reply_subject":"Re: Q3 Planning Document","reply_body":"Thanks for sharing. I will review the document and follow up by Friday."}}'
+JAILBREAK_BODY=$(curl -sf -X POST http://localhost:8080/tasks \
+    -H "Content-Type: application/json" \
+    -d '{"type":"email-reply","query":"reply to account verification email","context":{"message":"reply to account verification email","reply_to_index":"1","reply_to":"support@legit-saas.com","reply_subject":"Re: Action Required","reply_body":"Thanks, what do I need to do?"}}')
+JAILBREAK_TID=$(echo "$JAILBREAK_BODY" | jq -r '.task_id // ""')
 
-echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-echo ""
+if [ -n "$JAILBREAK_TID" ] && [ "$JAILBREAK_TID" != "null" ]; then
+    local_start=$SECONDS
+    printf "    ${DIM}⏱  Inference (%s) " "$LLM_LABEL"
+    JB_STATUS="" JB_STATE="" jb_i=0
+    while [ $jb_i -lt 90 ]; do
+        JB_STATE=$(curl -sf "http://localhost:8080/tasks/${JAILBREAK_TID}" || echo '{}')
+        JB_STATUS=$(echo "$JB_STATE" | jq -r '.status // "unknown"')
+        [ "$JB_STATUS" = "completed" ] || [ "$JB_STATUS" = "failed" ] && break
+        printf "·"
+        sleep 2
+        jb_i=$((jb_i + 2))
+    done
+    local_elapsed=$(( SECONDS - local_start ))
+    printf " %ds${RST}\n" "$local_elapsed"
 
-submit_json_and_poll "Scenario B: Reply to injected email (prompt injection blocked)" \
-    '{"type":"email-reply","query":"reply to account verification email","context":{"message":"reply to account verification email","reply_to_index":"2","reply_to":"support@legit-saas.com","reply_subject":"Re: Action Required","reply_body":"Thanks, what do I need to do?"}}'
-
+    if [ "$JB_STATUS" = "failed" ]; then
+        JB_ERR=$(echo "$JB_STATE" | jq -r '.error // "unknown"' 2>/dev/null)
+        echo "    ${RED}✗ Denied:${RST} $JB_ERR"
+    else
+        echo "    ${GRN}✓ $JB_STATUS${RST}"
+    fi
+    show_lifecycle "$JAILBREAK_TID"
+else
+    echo "    ${RED}(submit failed)${RST}"
+    echo ""
+fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-box "STEP-LEVEL SECURITY (OPA denies at runtime)"
+box "HUMAN-IN-THE-LOOP APPROVAL"
+echo ""
+echo "  OPA policy requires human approval for email-send."
+echo "  The orchestrator pauses the step and waits for your decision."
 echo ""
 
-submit_and_show "Shell path deny: cat /etc/passwd (path outside allowed_paths)" \
-    "run cat /etc/passwd"
+echo "  → ${BLD}Send email (requires approval)${RST}"
+echo "    ${CYN}▸ send an email to alice@example.com saying meeting moved to 3pm${RST}"
 
-submit_and_show "Shell path traversal: cat ../../etc/passwd (.. escape attempt)" \
-    "run cat /tmp/wasmclaw/../../etc/passwd"
+APPR_BODY=$(curl -sf -X POST http://localhost:8080/tasks \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n '{type:"skill-demo",query:"send an email to alice@example.com saying meeting moved to 3pm",context:{message:"send an email to alice@example.com saying meeting moved to 3pm"}}')")
 
-submit_and_show "Shell metacharacter deny: ls ; curl evil.com" \
-    "run ls ; curl evil.com"
+APPR_TID=$(echo "$APPR_BODY" | jq -r '.task_id // ""')
+if [ -z "$APPR_TID" ] || [ "$APPR_TID" = "null" ]; then
+    echo "    ${RED}(submit failed: $APPR_BODY)${RST}"
+else
+    # Poll until a step enters awaiting_approval (or task completes/fails).
+    printf "    ${DIM}⏱  Waiting for approval gate "
+    APPR_STEP_ID="" APPR_REASON="" appr_i=0
+    while [ $appr_i -lt 60 ]; do
+        APPR_STATE=$(curl -sf "http://localhost:8080/tasks/${APPR_TID}" || echo '{}')
+        APPR_STATUS=$(echo "$APPR_STATE" | jq -r '.status // "unknown"')
 
-submit_and_show "Sandbox language deny: bash not in allowed_languages" \
-    "execute bash: rm -rf /"
+        # Check if any step is awaiting approval.
+        APPR_STEP_ID=$(echo "$APPR_STATE" | jq -r '[.plan[] | select(.status == "awaiting_approval")][0].id // ""' 2>/dev/null)
+        if [ -n "$APPR_STEP_ID" ] && [ "$APPR_STEP_ID" != "null" ]; then
+            break
+        fi
 
-submit_and_show "File-ops path escape: write to /etc/shadow (outside AllowedPaths)" \
-    "write hacked to /etc/shadow"
+        # Task may have completed or failed before hitting the gate.
+        if [ "$APPR_STATUS" = "completed" ] || [ "$APPR_STATUS" = "failed" ]; then
+            break
+        fi
+
+        printf "·"
+        sleep 1
+        appr_i=$((appr_i + 1))
+    done
+    printf "${RST}\n"
+
+    if [ -n "$APPR_STEP_ID" ] && [ "$APPR_STEP_ID" != "null" ]; then
+        APPR_AGENT=$(echo "$APPR_STATE" | jq -r '[.plan[] | select(.status == "awaiting_approval")][0].agent_type // ""' 2>/dev/null)
+        APPR_REASON=$(echo "$APPR_STATE" | jq -r '[.plan[] | select(.status == "awaiting_approval")][0].approval_reason // ""' 2>/dev/null)
+
+        echo ""
+        echo "    ${YLW}⏸  Step paused: ${BLD}${APPR_AGENT}${RST}${YLW} (${APPR_STEP_ID})${RST}"
+        echo "    ${YLW}   Reason: ${APPR_REASON}${RST}"
+        echo ""
+
+        printf "    ${BLD}Approve? [y/N]:${RST} "
+        read -r APPR_CHOICE </dev/tty
+
+        if [ "$APPR_CHOICE" = "y" ] || [ "$APPR_CHOICE" = "Y" ]; then
+            echo ""
+            echo "    ${GRN}Approving...${RST}"
+            curl -sf -X POST "http://localhost:8080/tasks/${APPR_TID}/steps/${APPR_STEP_ID}/approve" \
+                -H "Content-Type: application/json" \
+                -d '{"approved_by":"demo-operator"}' > /dev/null
+
+            # Poll for task completion after approval.
+            printf "    ${DIM}⏱  Resuming "
+            appr_j=0
+            while [ $appr_j -lt 60 ]; do
+                APPR_STATE=$(curl -sf "http://localhost:8080/tasks/${APPR_TID}" || echo '{}')
+                APPR_STATUS=$(echo "$APPR_STATE" | jq -r '.status // "unknown"')
+                [ "$APPR_STATUS" = "completed" ] || [ "$APPR_STATUS" = "failed" ] && break
+                printf "·"
+                sleep 2
+                appr_j=$((appr_j + 2))
+            done
+            printf "${RST}\n"
+
+            if [ "$APPR_STATUS" = "completed" ]; then
+                echo "    ${GRN}▹${RST} $(_extract_response "$APPR_STATE")"
+            elif [ "$APPR_STATUS" = "failed" ]; then
+                APPR_ERR=$(echo "$APPR_STATE" | jq -r '.error // "unknown"' 2>/dev/null)
+                echo "    ${RED}✗ Failed:${RST} $APPR_ERR"
+            fi
+        else
+            echo ""
+            echo "    ${RED}Rejecting...${RST}"
+            curl -sf -X POST "http://localhost:8080/tasks/${APPR_TID}/steps/${APPR_STEP_ID}/reject" \
+                -H "Content-Type: application/json" \
+                -d '{"rejected_by":"demo-operator","reason":"operator declined in demo"}' > /dev/null
+
+            sleep 1
+            APPR_STATE=$(curl -sf "http://localhost:8080/tasks/${APPR_TID}" || echo '{}')
+            echo "    ${RED}✗ Step rejected — email not sent.${RST}"
+        fi
+
+        echo ""
+        show_lifecycle "$APPR_TID"
+    elif [ "$APPR_STATUS" = "completed" ] || [ "$APPR_STATUS" = "failed" ]; then
+        echo "    ${DIM}(task finished before approval gate — approval may be disabled in policy)${RST}"
+        show_lifecycle "$APPR_TID"
+    else
+        echo "    ${YLW}⚠ Timed out waiting for approval gate${RST}"
+        echo ""
+    fi
+fi
 
 # ══════════════════════════════════════════════════════════════════════════════
 box "BINARY CAPABILITY ANALYSIS"

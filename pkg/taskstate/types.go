@@ -22,7 +22,8 @@ const (
 	StepRunning   StepStatus = "running"
 	StepCompleted StepStatus = "completed"
 	StepFailed    StepStatus = "failed"
-	StepDenied    StepStatus = "denied" // policy evaluation denied the link
+	StepDenied           StepStatus = "denied"            // policy evaluation denied the link
+	StepAwaitingApproval StepStatus = "awaiting_approval" // paused pending human approval
 )
 
 // Step is one unit of work within a task plan.
@@ -44,6 +45,11 @@ type Step struct {
 
 	// Params carries step-specific parameters that BuildPayload reads.
 	Params map[string]string `json:"params,omitempty"`
+
+	// Approval fields — populated when policy sets requires_approval.
+	ApprovalReason string     `json:"approval_reason,omitempty"`
+	ApprovedBy     string     `json:"approved_by,omitempty"`
+	ApprovedAt     *time.Time `json:"approved_at,omitempty"`
 }
 
 // TaskState is the authoritative record for a running or completed task.
@@ -94,6 +100,9 @@ const (
 	EventStepFailed     EventType = "step.failed"
 	EventPolicyPermit   EventType = "policy.permit"
 	EventPolicyDeny     EventType = "policy.deny"
-	EventComponentStart EventType = "component.start"
-	EventComponentStop  EventType = "component.stop"
+	EventComponentStart        EventType = "component.start"
+	EventComponentStop         EventType = "component.stop"
+	EventStepAwaitingApproval  EventType = "step.awaiting_approval"
+	EventStepApproved          EventType = "step.approved"
+	EventStepRejected          EventType = "step.rejected"
 )

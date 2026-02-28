@@ -193,6 +193,12 @@ func readOverrides(authz map[string]any, r *PolicyResult) {
 			}
 		}
 	}
+	if v, ok := authz["requires_approval"].(bool); ok {
+		r.RequiresApproval = v
+	}
+	if v, ok := authz["approval_reason"].(string); ok {
+		r.ApprovalReason = v
+	}
 }
 
 // LoadRegoModules loads Rego source files from the given path.

@@ -23,7 +23,7 @@ sequenceDiagram
     L->>P: step policy check
     P-->>L: allow
     L->>W: email_read.wasm execute
-    W-->>L: 3 emails returned
+    W-->>L: 2 emails returned
     end
 
     rect rgb(240, 255, 240)
@@ -60,7 +60,7 @@ sequenceDiagram
     participant P as OPA
     participant W as WASM
 
-    C->>A: POST /tasks email_reply index=2
+    C->>A: POST /tasks email_reply index=1
     A->>P: submit policy check
     P-->>A: allow
     A->>L: build plan: read, respond, send
@@ -71,13 +71,13 @@ sequenceDiagram
     L->>P: step policy check
     P-->>L: allow
     L->>W: email_read.wasm execute
-    W-->>L: 3 emails returned
+    W-->>L: 2 emails returned
     end
 
     rect rgb(255, 235, 235)
     Note right of L: Step 1: responder
     L->>P: step policy with prior_results
-    Note right of P: index 2 = injection, pattern matched!
+    Note right of P: index 1 = injection, pattern matched!
     P-->>L: DENY jailbreak detected
     L->>L: mark denied, fail task
     end

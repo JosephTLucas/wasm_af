@@ -95,7 +95,7 @@ NATS JetStream KV provides task state persistence and an immutable audit trail. 
 
 ## Core Principles
 
-**Policy-driven capability grants.** An agent does not declare what it needs — the orchestrator decides what it gets. OPA evaluates every step before a plugin is created. Structured decisions from Rego (`allowed_hosts`, `max_memory_pages`, `timeout_sec`, `host_functions`, `config`, `allowed_paths`) flow directly into the Extism manifest. Deny-by-default; the orchestrator won't start without `OPA_POLICY`.
+**Policy-driven capability grants.** An agent does not declare what it needs — the orchestrator decides what it gets. OPA evaluates every step before a plugin is created. Structured decisions from Rego (`allowed_hosts`, `max_memory_pages`, `timeout_sec`, `host_functions`, `config`, `allowed_paths`, `requires_approval`) flow directly into the Extism manifest. Deny-by-default; the orchestrator won't start without `OPA_POLICY`.
 
 **Per-instance scoping.** Each plugin gets its own manifest. In the fan-out example, three url-fetch instances run in parallel — each scoped to exactly one domain. Instance A cannot reach Instance B's domain. The allowlist is data-driven and live-updatable via NATS KV:
 
@@ -108,6 +108,35 @@ nats kv put wasm-af-config allowed-fetch-domains "webassembly.org,wasmcloud.com"
 **Host functions as capabilities.** LLM inference, shell execution, email delivery, and KV storage are host functions injected into plugins that need them. A plugin without the `llm_complete` import cannot call it — the function doesn't exist in the module's address space. Credentials (API keys, SMTP) live in Go closures; they are never written to WASM memory.
 
 **Ephemeral lifecycle.** Each plugin is `NewPlugin` → `Call("execute")` → `Close` within a single Go function scope. Between steps, there is no process to attack, no memory to dump. An agent that doesn't exist can't be exploited.
+
+**Human-in-the-loop approval gates.** When OPA policy returns `requires_approval: true` for a step, the orchestrator pauses that step instead of executing it. The step enters `awaiting_approval` status, an event is published to NATS (`wasm-af.approvals.<task_id>`) and optionally POSTed to a webhook, and the task goroutine parks itself. Other branches of the DAG continue running. Execution resumes only after an explicit approve or reject via the HTTP API. This keeps the human interface out of the framework — any system (Slack bot, chat UI, CLI, dashboard) can handle the approval by calling two endpoints.
+
+```rego
+# In your policy.rego — approval is opt-in per agent type:
+requires_approval if { input.step.agent_type == "email-send" }
+approval_reason := "email delivery requires human approval" if { input.step.agent_type == "email-send" }
+```
+
+---
+
+## API
+
+### Task Lifecycle
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/tasks` | Submit a new task (returns `task_id`) |
+| `GET` | `/tasks/{id}` | Get task state (plan, step statuses, results) |
+
+### Approval Gates
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/tasks/{id}/approvals` | List steps awaiting approval |
+| `POST` | `/tasks/{id}/steps/{stepId}/approve` | Approve a step (body: `{"approved_by": "alice"}`) |
+| `POST` | `/tasks/{id}/steps/{stepId}/reject` | Reject a step (body: `{"rejected_by": "bob", "reason": "..."}`) |
+
+Approving a step transitions it back to `pending` and re-launches the task. Rejecting transitions it to `denied`. Both are recorded in the audit log.
 
 ---
 
@@ -131,8 +160,10 @@ wasm_af/
 │   ├── llm.go                      # llm_complete host function provider (mock / API / Ollama)
 │   ├── registry.go                 # agent registry with enrichments
 │   ├── builders.go                 # plan builders (including generic JSON-driven)
-│   ├── builder_chat.go             # chat plan builder (memory → router → responder → memory)
-│   └── taskstate.go                # HTTP handlers
+│   ├── builder_chat.go             # chat + skill-demo plan builders
+│   ├── builder_email_reply.go      # email-reply + reply-all (parallel DAG) plan builders
+│   ├── taskstate.go                # HTTP handlers (submit, get, approve, reject, list approvals)
+│   └── approval.go                 # human-in-the-loop: NATS publish, webhook callback, timeout
 │
 ├── cmd/webhook-gateway/            # lightweight HTTP gateway (chat message → task → poll)
 │
@@ -167,14 +198,16 @@ wasm_af/
     │   ├── run.sh, malicious_page.html, policy.rego, Makefile, README.md, ...
     │
     └── wasmclaw/                   # personal AI assistant with two-tier execution
-        ├── run.sh                  # builds, runs, exercises every agent + security boundary
+        ├── lib/setup.sh            # shared infra: build, NATS, orchestrator, cleanup
+        ├── run.sh                  # main demo (skills, security, approval gate)
+        ├── reply-all-demo.sh       # parallel DAG demo (jailbreak + approval in one task)
         ├── agents.json             # agent registry (9 agents, capability/host-fn mappings)
-        ├── policy.rego             # step policy: authz, shell hardening, email-reply jailbreak gate
+        ├── policy.rego             # step policy: authz, shell hardening, jailbreak gate, approval gates
+        ├── submit.rego             # submission policy (data-driven allowed_task_types)
         ├── jailbreak.rego          # standalone jailbreak scanner (ad-hoc opa eval)
-        ├── data.json               # allowlists, feature flags, jailbreak patterns
-        ├── policy_test.rego        # OPA authz tests (metachar, path, splice, jailbreak gate)
-        ├── jailbreak_test.rego     # OPA jailbreak scanner tests
-        ├── Makefile                # make demo, make demo-api, make test-policy
+        ├── data.json               # allowlists, feature flags, jailbreak patterns, task types
+        ├── *_test.rego             # 80 OPA tests (opa test .)
+        ├── Makefile                # make demo, make demo-api, make reply-all-demo
         └── README.md
 ```
 
@@ -185,9 +218,10 @@ wasm_af/
 ### Wasmclaw (Personal AI Assistant)
 
 ```bash
-./examples/wasmclaw/run.sh                   # mock LLM (deterministic, no deps)
-LLM_MODE=api ./examples/wasmclaw/run.sh      # NVIDIA NIM API (needs NV_API_KEY)
-LLM_MODE=real ./examples/wasmclaw/run.sh     # local Ollama
+cd examples/wasmclaw
+make demo                              # mock LLM (deterministic, no deps)
+LLM_MODE=api make demo                 # NVIDIA NIM API (needs NV_API_KEY)
+make reply-all-demo                    # parallel DAG: jailbreak + approval (interactive Y/n)
 ```
 
 ### Fan-Out Summarizer
@@ -259,6 +293,8 @@ curl localhost:8080/tasks/<task-id> | jq .
 | `SANDBOX_ALLOWED_LANGUAGES` | `python` | Comma-separated language allowlist for sandbox-exec |
 | `SANDBOX_ALLOWED_PATHS` | `/tmp/wasmclaw` | Comma-separated host paths mounted into sandbox instances |
 | `EMAIL_ALLOWED_DOMAINS` | `example.com,partner-corp.com` | Comma-separated recipient domain allowlist for email-send host function |
+| `APPROVAL_WEBHOOK_URL` | — | URL to POST approval events when a step requires human approval |
+| `APPROVAL_TIMEOUT_SEC` | `0` | Auto-reject steps after this many seconds without approval (0 = no timeout) |
 
 ### Webhook Gateway (`cmd/webhook-gateway/`)
 
@@ -278,13 +314,9 @@ The `run.sh` scripts map convenience variables to the orchestrator's LLM config:
 
 ---
 
-## Open Questions
+## Roadmap
 
-- **Agent-to-agent streaming.** For long-running LLM generations, should agents stream tokens through the orchestrator, or should direct plugin-to-plugin channels be permitted under policy?
-- **Recursive decomposition.** When an agent determines it needs another agent, the request must round-trip through the orchestrator. Is the latency cost acceptable?
-- **Token budgeting.** The LLM host function is the natural enforcement point for per-task token limits. How should budgets propagate when a task fans out?
-- **Distribution.** The current architecture is single-process. For multi-host scaling, multiple orchestrator instances could distribute work over NATS. The mechanism exists but isn't built yet.
-- **Component Model.** Extism currently uses core WASM modules. When the Go ecosystem gains Component Model hosting support, migrating to WIT-typed interfaces would add compile-time safety at the plugin boundary.
+See [ROADMAP.md](ROADMAP.md) for the development roadmap.
 
 ---
 

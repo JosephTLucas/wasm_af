@@ -1,18 +1,22 @@
-.PHONY: demo demo-api demo-real build pull-model test-policy clean help
+.PHONY: demo demo-api demo-real reply-all-demo build pull-model test-policy clean help
 
-ROOT    := $(shell cd ../.. && pwd)
-MODEL   ?= qwen3:4b
+ROOT      := $(shell cd ../.. && pwd)
+MODEL     ?= qwen3:4b
+LLM_MODE  ?= mock
 
 ##@ Demo
 
-demo: build ## Build + run with mock LLM (deterministic routing, no external deps)
-	@$(ROOT)/examples/wasmclaw/run.sh
+demo: build ## Build + run with current LLM_MODE (default: mock)
+	@LLM_MODE=$(LLM_MODE) $(ROOT)/examples/wasmclaw/run.sh
 
 demo-api: build ## Build + run with NVIDIA NIM API (needs NV_API_KEY in .env or env)
 	@LLM_MODE=api $(ROOT)/examples/wasmclaw/run.sh
 
 demo-real: pull-model build ## Build + run with local Ollama
 	@LLM_MODE=real MODEL=$(MODEL) $(ROOT)/examples/wasmclaw/run.sh
+
+reply-all-demo: build ## Reply-all parallel DAG demo (jailbreak + approval in one task)
+	@LLM_MODE=$(LLM_MODE) $(ROOT)/examples/wasmclaw/reply-all-demo.sh
 
 ##@ Setup
 

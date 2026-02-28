@@ -13,6 +13,7 @@ import (
 	"time"
 
 	extism "github.com/extism/go-sdk"
+	nats "github.com/nats-io/nats.go"
 
 	"github.com/jolucas/wasm-af/pkg/taskstate"
 )
@@ -35,6 +36,10 @@ type Orchestrator struct {
 	pluginTimeout        time.Duration
 	pluginMaxMemoryPages uint32
 	pluginMaxHTTPBytes   int64
+
+	natsConn            *nats.Conn
+	approvalWebhookURL  string
+	approvalTimeoutSec  int
 }
 
 // TaskInput is the JSON structure passed to every agent plugin.
@@ -71,6 +76,9 @@ type PolicyResult struct {
 	HostFunctions []string          `json:"host_functions,omitempty"`
 	Config        map[string]string `json:"config,omitempty"`
 	AllowedPaths  map[string]string `json:"allowed_paths,omitempty"`
+
+	RequiresApproval bool   `json:"requires_approval,omitempty"`
+	ApprovalReason   string `json:"approval_reason,omitempty"`
 }
 
 // PluginOpts carries per-step overrides for plugin creation,

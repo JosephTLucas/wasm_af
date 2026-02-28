@@ -2,6 +2,25 @@ package main
 
 import "github.com/jolucas/wasm-af/pkg/taskstate"
 
+// SkillDemoBuilder creates a minimal plan for demonstrating individual skills
+// without the overhead of memory retrieval or LLM-based response generation.
+// Plan: router → [skill splice]. The skill step's output is the final result.
+type SkillDemoBuilder struct{}
+
+func (SkillDemoBuilder) BuildPlan(taskID string, _ map[string]string, _ *AgentRegistry, _ *Orchestrator) ([]taskstate.Step, error) {
+	routerID := stepID(taskID, 1)
+
+	return []taskstate.Step{
+		{
+			ID:        routerID,
+			AgentType: "router",
+			InputKey:  routerID + ".input",
+			OutputKey: routerID + ".output",
+			Status:    taskstate.StepPending,
+		},
+	}, nil
+}
+
 // ChatBuilder creates a conversational AI plan.
 //
 // The initial plan has four steps:

@@ -1,31 +1,42 @@
 package wasm_af.submit
 
-# ── Functionality: chat tasks are accepted ────────────────────────────────────
+_allowed_types := ["chat", "email-reply", "skill-demo"]
+
+# ── Functionality: permitted task types are accepted ─────────────────────────
 
 test_chat_allowed if {
 	allow with input as {"task_type": "chat"}
+		with data.config.allowed_task_types as _allowed_types
 }
 
-# ── Security: all other task types are denied ─────────────────────────────────
+test_email_reply_allowed if {
+	allow with input as {"task_type": "email-reply"}
+		with data.config.allowed_task_types as _allowed_types
+}
+
+test_skill_demo_allowed if {
+	allow with input as {"task_type": "skill-demo"}
+		with data.config.allowed_task_types as _allowed_types
+}
+
+# ── Security: unlisted task types are denied ─────────────────────────────────
 
 test_research_denied if {
 	not allow with input as {"task_type": "research"}
+		with data.config.allowed_task_types as _allowed_types
 }
 
 test_fan_out_denied if {
 	not allow with input as {"task_type": "fan-out-summarizer"}
+		with data.config.allowed_task_types as _allowed_types
 }
 
 test_empty_type_denied if {
 	not allow with input as {"task_type": ""}
+		with data.config.allowed_task_types as _allowed_types
 }
 
 test_arbitrary_type_denied if {
 	not allow with input as {"task_type": "evil-task"}
-}
-
-# ── Functionality: email-reply tasks are accepted ────────────────────────────
-
-test_email_reply_allowed if {
-	allow with input as {"task_type": "email-reply"}
+		with data.config.allowed_task_types as _allowed_types
 }

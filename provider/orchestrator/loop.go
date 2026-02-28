@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -83,31 +82,42 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 			return
 		}
 
+		// The completed set determines which dependencies are satisfied.
+		// Only actually-completed steps satisfy downstream dependencies.
+		// Non-dispatchable steps (failed, denied, awaiting approval) are
+		// filtered after Ready() to prevent re-dispatch without unblocking
+		// their dependents.
 		completed := make(map[string]bool)
+		nonDispatchable := make(map[string]bool)
 		for _, s := range state.Plan {
-			if s.Status == taskstate.StepCompleted {
+			switch s.Status {
+			case taskstate.StepCompleted:
 				completed[s.ID] = true
+			case taskstate.StepFailed, taskstate.StepDenied, taskstate.StepAwaitingApproval:
+				nonDispatchable[s.ID] = true
 			}
 		}
 
 		readyIDs := g.Ready(completed)
-		if len(readyIDs) == 0 {
+		var dispatchable []string
+		for _, id := range readyIDs {
+			if !nonDispatchable[id] {
+				dispatchable = append(dispatchable, id)
+			}
+		}
+		if len(dispatchable) == 0 {
 			break
 		}
 
-		readyIndices := make([]int, 0, len(readyIDs))
-		for _, id := range readyIDs {
+		readyIndices := make([]int, 0, len(dispatchable))
+		for _, id := range dispatchable {
 			idx := stepIndex(state.Plan, id)
 			if idx >= 0 {
 				readyIndices = append(readyIndices, idx)
 			}
 		}
 
-		if err := o.runParallelSteps(ctx, state, readyIndices); err != nil {
-			log.Error("step batch failed", "err", err)
-			o.failTask(ctx, taskID, fmt.Sprintf("step batch failed: %v", err))
-			return
-		}
+		o.runParallelSteps(ctx, state, readyIndices)
 
 		// Reload state after the batch completes (runStep persists results).
 		state, err = o.store.Get(ctx, taskID)
@@ -118,7 +128,7 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 		}
 
 		// Handle splices for any splice-flagged steps that just completed.
-		for _, id := range readyIDs {
+		for _, id := range dispatchable {
 			idx := stepIndex(state.Plan, id)
 			if idx < 0 {
 				continue
@@ -144,18 +154,86 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 			o.failTask(ctx, taskID, "state reload failed")
 			return
 		}
-	}
 
-	// Check for stuck tasks (pending steps with unmet dependencies due to failures).
-	allDone := true
-	for _, s := range state.Plan {
-		if s.Status == taskstate.StepPending {
-			allDone = false
-			break
+		// If steps are awaiting approval and nothing else is ready, park
+		// the task goroutine. The approval API will re-launch runTask.
+		hasAwaitingApproval := false
+		for _, s := range state.Plan {
+			if s.Status == taskstate.StepAwaitingApproval {
+				hasAwaitingApproval = true
+				break
+			}
+		}
+		if hasAwaitingApproval {
+			nextG, _ := buildDAG(state.Plan)
+			nextCompleted := make(map[string]bool)
+			nextNonDispatch := make(map[string]bool)
+			for _, s := range state.Plan {
+				if s.Status == taskstate.StepCompleted {
+					nextCompleted[s.ID] = true
+				}
+				if s.Status == taskstate.StepFailed || s.Status == taskstate.StepDenied || s.Status == taskstate.StepAwaitingApproval {
+					nextNonDispatch[s.ID] = true
+				}
+			}
+			nextReady := nextG.Ready(nextCompleted)
+			canDispatch := false
+			for _, id := range nextReady {
+				if !nextNonDispatch[id] {
+					canDispatch = true
+					break
+				}
+			}
+			if nextG == nil || !canDispatch {
+				log.Info("task parked, awaiting approval")
+				return
+			}
 		}
 	}
-	if !allDone {
-		o.failTask(ctx, taskID, "task stuck: pending steps with unmet dependencies")
+
+	// Determine terminal state. A step is "live" if it's pending or
+	// awaiting approval AND none of its transitive ancestors are
+	// failed/denied (which would make it a dead branch).
+	finalG, _ := buildDAG(state.Plan)
+	terminalStatuses := map[string]bool{}
+	for _, s := range state.Plan {
+		if s.Status == taskstate.StepFailed || s.Status == taskstate.StepDenied {
+			terminalStatuses[s.ID] = true
+		}
+	}
+
+	hasLivePending := false
+	hasAwaiting := false
+	for _, s := range state.Plan {
+		if s.Status == taskstate.StepAwaitingApproval {
+			hasAwaiting = true
+			continue
+		}
+		if s.Status != taskstate.StepPending {
+			continue
+		}
+		// A pending step whose ancestors include a failed/denied step
+		// is a dead branch — it will never run. Don't count it.
+		dead := false
+		if finalG != nil {
+			for _, aid := range finalG.Ancestors(s.ID) {
+				if terminalStatuses[aid] {
+					dead = true
+					break
+				}
+			}
+		}
+		if !dead {
+			hasLivePending = true
+		}
+	}
+
+	if hasAwaiting || hasLivePending {
+		if hasAwaiting {
+			log.Info("task parked, awaiting approval")
+		} else {
+			o.failTask(ctx, taskID, "task stuck: pending steps with unmet dependencies")
+		}
 		return
 	}
 
@@ -176,20 +254,22 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 }
 
 // runParallelSteps executes a batch of plan steps concurrently.
-func (o *Orchestrator) runParallelSteps(ctx context.Context, state *taskstate.TaskState, indices []int) error {
-	errs := make([]error, len(indices))
+// Individual step failures are persisted by runStep (status + audit) and
+// logged here but do not kill the task — other branches continue.
+func (o *Orchestrator) runParallelSteps(ctx context.Context, state *taskstate.TaskState, indices []int) {
 	var wg sync.WaitGroup
 
-	for slot, idx := range indices {
+	for _, idx := range indices {
 		wg.Add(1)
-		go func(slot, idx int) {
+		go func(idx int) {
 			defer wg.Done()
-			errs[slot] = o.runStep(ctx, state, idx)
-		}(slot, idx)
+			if err := o.runStep(ctx, state, idx); err != nil {
+				o.logger.Warn("step failed", "step_id", state.Plan[idx].ID, "err", err)
+			}
+		}(idx)
 	}
 
 	wg.Wait()
-	return errors.Join(errs...)
 }
 
 // runStep executes a single plan step:
@@ -267,6 +347,34 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 		PolicySource: policySource, PolicyCapability: meta.Capability,
 	}); err != nil {
 		log.Error("audit write failed", "event", taskstate.EventPolicyPermit, "err", err)
+	}
+
+	if result.RequiresApproval && step.ApprovedBy == "" {
+		reason := "policy requires approval"
+		if result.ApprovalReason != "" {
+			reason = result.ApprovalReason
+		}
+		if err := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
+			idx := stepIndex(s.Plan, step.ID)
+			if idx < 0 {
+				return fmt.Errorf("step %s not found", step.ID)
+			}
+			s.Plan[idx].Status = taskstate.StepAwaitingApproval
+			s.Plan[idx].ApprovalReason = reason
+			return nil
+		}); err != nil {
+			return fmt.Errorf("mark step awaiting approval: %w", err)
+		}
+		if auditErr := o.store.AppendAudit(ctx, &taskstate.AuditEvent{
+			TaskID: taskID, StepID: step.ID,
+			EventType: taskstate.EventStepAwaitingApproval,
+			Message:   reason,
+		}); auditErr != nil {
+			log.Error("audit write failed", "event", taskstate.EventStepAwaitingApproval, "err", auditErr)
+		}
+		o.publishApprovalNeeded(ctx, taskID, step.ID, step.AgentType, reason)
+		log.Info("step awaiting approval", "reason", reason)
+		return nil
 	}
 
 	opts := PluginOpts{

@@ -35,18 +35,59 @@ Shell commands use `exec.Command(binary, args...)` — never `/bin/sh -c`. Three
 | **Network** | None (host fn handles it) | None |
 | **Injection defense** | Never sees credentials | No host fns, no HTTP, no exfil path |
 
+## Human-in-the-loop approval gates
+
+High-stakes steps can require human approval before execution. Policy controls which agent types need approval:
+
+- **email-send** always requires approval when `approval_enabled` is true
+- **shell** commands not in `auto_approved_commands` require approval (e.g. `find` needs approval, `ls` does not)
+
+When a step requires approval, the orchestrator pauses it in `awaiting_approval` status and publishes an event to NATS. The task continues executing other branches. Approve or reject via the API:
+
+```bash
+# List pending approvals
+curl localhost:8080/tasks/<task-id>/approvals | jq .
+
+# Approve a step
+curl -X POST localhost:8080/tasks/<task-id>/steps/<step-id>/approve \
+  -d '{"approved_by": "alice"}'
+
+# Reject a step
+curl -X POST localhost:8080/tasks/<task-id>/steps/<step-id>/reject \
+  -d '{"rejected_by": "bob", "reason": "not appropriate"}'
+```
+
+Controlled by `data.json` config:
+- `approval_enabled` — master switch for approval gates
+- `auto_approved_commands` — shell commands that skip approval (safe read-only commands)
+
 ## Email reply pipeline
 
 ```
-email-read → [OPA jailbreak gate] → responder → email-send
+email-read → [OPA jailbreak gate] → responder → [approval gate] → email-send
 ```
 
-The jailbreak check is the OPA policy evaluation before the responder step — it inspects `prior_results` for injection patterns configured in `data.json`. Two demo scenarios:
+The jailbreak check is the OPA policy evaluation before the responder step — it inspects `prior_results` for injection patterns configured in `data.json`.
 
-| Scenario | Target email | Result |
-|---|---|---|
-| **A** | Clean (alice, Q3 Planning) | `✓ read → ✓ respond → ✓ send` |
-| **B** | Prompt injection attempt | `✓ read → ✗ responder denied` — LLM never sees injected content |
+## Reply-all parallel DAG
+
+The `reply-all` task type processes all emails in a single DAG with parallel branches:
+
+```
+               email-read
+              /          \
+     responder-0       responder-1
+     (email 0)         (email 1)
+         |                 |
+   email-send-0      email-send-1
+   (approval)        (never runs)
+```
+
+Email 0 (clean) proceeds to email-send which pauses for human approval. Email 1 (prompt injection) is denied by the jailbreak gate — its branch dies without affecting the healthy branch.
+
+```bash
+make reply-all-demo           # standalone demo with interactive Y/n approval
+```
 
 ---
 
@@ -94,8 +135,11 @@ POST /message { message: "calculate fibonacci of 10" }
 
 - `agents.json` — agent registry
 - `data.json` — OPA data: allowlists, feature flags, jailbreak patterns
-- `policy.rego` — step policy (authz, shell hardening, jailbreak gate)
+- `policy.rego` — step policy (authz, shell hardening, jailbreak gate, approval gates)
+- `submit.rego` — submission policy (data-driven via `allowed_task_types`)
 - `jailbreak.rego` — standalone scanner for ad-hoc `opa eval`
-- `submit.rego` — submission policy
-- `*_test.rego` — 69 OPA tests (`opa test .`)
-- `Makefile` / `run.sh` — build + run
+- `*_test.rego` — 80 OPA tests (`opa test .`)
+- `lib/setup.sh` — shared infrastructure (build, NATS, orchestrator, cleanup)
+- `run.sh` — main demo (skills, security, approval)
+- `reply-all-demo.sh` — parallel DAG demo (jailbreak + approval in one task)
+- `Makefile` — `make demo`, `make demo-api`, `make reply-all-demo`, `make test-policy`

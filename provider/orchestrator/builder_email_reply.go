@@ -1,6 +1,11 @@
 package main
 
-import "github.com/jolucas/wasm-af/pkg/taskstate"
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/jolucas/wasm-af/pkg/taskstate"
+)
 
 // EmailReplyBuilder creates an email-reply workflow:
 //
@@ -50,4 +55,77 @@ func (EmailReplyBuilder) BuildPlan(taskID string, ctx map[string]string, _ *Agen
 			},
 		},
 	}, nil
+}
+
+// ReplyAllBuilder creates a parallel reply-to-all-emails workflow:
+//
+//	email-read → responder-0 → email-send-0
+//	           → responder-1 → email-send-1
+//	           → ...
+//
+// Each responder step gets reply_to_index in its params so the jailbreak
+// policy can inspect each email independently. Branches run in parallel;
+// a denied branch (jailbreak detected) does not kill healthy branches.
+//
+// Context keys:
+//
+//	email_count       — number of emails to process (default: 2)
+//	reply_to_N        — recipient address for email N
+//	reply_subject_N   — subject line for email N
+//	reply_body_N      — reply body for email N
+type ReplyAllBuilder struct{}
+
+func (ReplyAllBuilder) BuildPlan(taskID string, ctx map[string]string, _ *AgentRegistry, _ *Orchestrator) ([]taskstate.Step, error) {
+	emailCount := 2
+	if v, ok := ctx["email_count"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			emailCount = n
+		}
+	}
+
+	readID := stepID(taskID, 1)
+	steps := []taskstate.Step{
+		{
+			ID:        readID,
+			AgentType: "email-read",
+			InputKey:  readID + ".input",
+			OutputKey: readID + ".output",
+			Status:    taskstate.StepPending,
+			Params:    map[string]string{"folder": "inbox"},
+		},
+	}
+
+	stepNum := 2
+	for i := 0; i < emailCount; i++ {
+		idx := strconv.Itoa(i)
+		respID := fmt.Sprintf("%s-respond-%d", taskID, i)
+		sendID := fmt.Sprintf("%s-send-%d", taskID, i)
+
+		steps = append(steps, taskstate.Step{
+			ID:        respID,
+			AgentType: "responder",
+			InputKey:  respID + ".input",
+			OutputKey: respID + ".output",
+			Status:    taskstate.StepPending,
+			DependsOn: []string{readID},
+			Params:    map[string]string{"reply_to_index": idx},
+		})
+
+		steps = append(steps, taskstate.Step{
+			ID:        sendID,
+			AgentType: "email-send",
+			InputKey:  sendID + ".input",
+			OutputKey: sendID + ".output",
+			Status:    taskstate.StepPending,
+			DependsOn: []string{respID},
+			Params: map[string]string{
+				"to":      ctx[fmt.Sprintf("reply_to_%d", i)],
+				"subject": ctx[fmt.Sprintf("reply_subject_%d", i)],
+				"body":    ctx[fmt.Sprintf("reply_body_%d", i)],
+			},
+		})
+		stepNum += 2
+	}
+
+	return steps, nil
 }

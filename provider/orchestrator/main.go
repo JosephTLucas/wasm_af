@@ -74,6 +74,8 @@ func run(logger *slog.Logger) error {
 	RegisterDefaultBuilders(planBuilders)
 	planBuilders.Register("chat", ChatBuilder{})
 	planBuilders.Register("email-reply", EmailReplyBuilder{})
+	planBuilders.Register("reply-all", ReplyAllBuilder{})
+	planBuilders.Register("skill-demo", SkillDemoBuilder{})
 
 	// ── HOST FUNCTION REGISTRY ──────────────────────────────────────────────
 	hostFns := NewHostFnRegistry()
@@ -206,6 +208,9 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("config KV: %w", err)
 	}
 
+	approvalWebhookURL := os.Getenv("APPROVAL_WEBHOOK_URL")
+	approvalTimeoutSec := envOrInt("APPROVAL_TIMEOUT_SEC", 0)
+
 	orch := &Orchestrator{
 		logger:               logger,
 		store:                store,
@@ -218,6 +223,16 @@ func run(logger *slog.Logger) error {
 		pluginTimeout:        time.Duration(pluginTimeoutSec) * time.Second,
 		pluginMaxMemoryPages: uint32(pluginMaxMemPages),
 		pluginMaxHTTPBytes:   pluginMaxHTTPBytes,
+		natsConn:             nc,
+		approvalWebhookURL:   approvalWebhookURL,
+		approvalTimeoutSec:   approvalTimeoutSec,
+	}
+
+	if approvalWebhookURL != "" {
+		logger.Info("approval webhook configured", "url", approvalWebhookURL)
+	}
+	if approvalTimeoutSec > 0 {
+		logger.Info("approval timeout configured", "timeout_sec", approvalTimeoutSec)
 	}
 
 	// Synchronously load the current allowlist from NATS KV into OPA data store.
@@ -276,6 +291,9 @@ func run(logger *slog.Logger) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", orch.handleSubmitTask)
 	mux.HandleFunc("GET /tasks/{id}", orch.handleGetTask)
+	mux.HandleFunc("GET /tasks/{id}/approvals", orch.handleListApprovals)
+	mux.HandleFunc("POST /tasks/{id}/steps/{stepId}/approve", orch.handleApproveStep)
+	mux.HandleFunc("POST /tasks/{id}/steps/{stepId}/reject", orch.handleRejectStep)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})

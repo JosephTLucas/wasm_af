@@ -5,14 +5,10 @@ import rego.v1
 default allow := false
 
 allow if {
-	input.task_type == "chat"
-}
-
-allow if {
-	input.task_type == "email-reply"
+	input.task_type in data.config.allowed_task_types
 }
 
 deny_message := msg if {
 	not allow
-	msg := sprintf("task type %q is not allowed; permitted types: chat, email-reply", [input.task_type])
+	msg := sprintf("task type %q is not allowed; permitted: %v", [input.task_type, data.config.allowed_task_types])
 }
