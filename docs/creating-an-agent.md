@@ -1,10 +1,13 @@
 # Creating a New Agent
 
-This guide walks through adding a new WASM agent plugin to WASM_AF, from Rust crate creation through OPA policy authoring and registration.
+This guide covers two paths for adding an agent to WASM_AF:
+
+- **Platform agent** (this page, sections 1-7) — a Rust crate checked into the repo, compiled at build time, with full access to host functions and a tailored OPA policy.
+- **External agent (BYOA)** (section 8) — a pre-compiled `.wasm` binary uploaded to a running orchestrator via `POST /agents`, automatically sandboxed with the restrictive "untrusted" policy tier.
 
 ## Overview
 
-Every agent in WASM_AF is a Rust crate compiled to WebAssembly that exports a single `execute` function. The orchestrator creates a fresh plugin instance for each invocation, calls `execute`, reads the result, and destroys the instance.
+Every agent in WASM_AF is a WASM module that exports a single `execute` function. The orchestrator creates a fresh plugin instance for each invocation, calls `execute`, reads the result, and destroys the instance.
 
 ```
 TaskInput (JSON) → execute() → TaskOutput (JSON)
@@ -214,6 +217,92 @@ curl -X POST localhost:8080/tasks \
   -H 'Content-Type: application/json' \
   -d '{"type":"generic","query":"test","context":{"steps":"[{\"agent_type\":\"my-agent\",\"params\":{\"query\":\"hello\"}}]"}}'
 ```
+
+## 8. External agent (BYOA) — upload a pre-compiled WASM binary
+
+If you have a pre-compiled `.wasm` binary (from any language — Rust, Go, C, Zig, AssemblyScript) that exports an `execute` function accepting `TaskInput` and returning `TaskOutput`, you can register it at runtime without rebuilding the orchestrator.
+
+### Upload
+
+```bash
+curl -X POST localhost:8080/agents \
+  -F 'meta={"name":"my-agent","context_key":"my_agent_result"}' \
+  -F 'wasm=@path/to/my_agent.wasm'
+```
+
+The orchestrator will:
+1. Validate the binary (instantiate with zero capabilities, check that `execute` exists).
+2. Write it to `WASM_DIR`.
+3. Register it with `capability: "untrusted"`, `host_functions: []`, `external: true`.
+
+The name must match `[A-Za-z0-9_-]+` and must not collide with a platform agent.
+
+### Policy
+
+External agents are governed by the BYOA policy tier (`policies/byoa.rego`). To use it, copy it alongside your existing `policy.rego` — since both share `package wasm_af.authz`, the rules merge automatically.
+
+Default sandbox for untrusted agents:
+
+| Constraint | Default | Configurable via |
+|---|---|---|
+| Host functions | none (`[]`) | — |
+| Network (allowed_hosts) | none (`[]`) | — |
+| Memory | 64 pages (4 MiB) | `data.config.byoa_max_memory_pages` |
+| Timeout | 10 seconds | `data.config.byoa_timeout_sec` |
+| Human approval | required | — |
+| Execution gate | must be in approved list | `data.config.approved_external_agents` |
+
+### Approve for execution
+
+External agents are deny-by-default. Add the agent to the approved list in your `data.json`:
+
+```json
+{
+  "config": {
+    "approved_external_agents": ["my-agent"]
+  }
+}
+```
+
+Or update it at runtime via NATS KV (changes take effect immediately without restart):
+
+```bash
+nats kv put wasm-af-config approved-external-agents "my-agent,another-agent"
+```
+
+### Use in a task
+
+Reference the agent by name in a plan step (e.g., via the `generic` plan builder or the splice mechanism):
+
+```bash
+curl -X POST localhost:8080/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "type": "generic",
+    "query": "test",
+    "context": {
+      "steps": "[{\"agent_type\":\"my-agent\",\"params\":{\"query\":\"hello\"}}]"
+    }
+  }'
+```
+
+### List and remove
+
+```bash
+# List all agents (platform + external)
+curl localhost:8080/agents | jq '.[] | select(.external)'
+
+# Remove an external agent
+curl -X DELETE localhost:8080/agents/my-agent
+```
+
+Platform agents cannot be removed via the API.
+
+### Persistence
+
+External agent registrations are persisted to NATS KV (`wasm-af-config/external-agents`). They survive orchestrator restarts and sync across replicas automatically.
+
+---
 
 ## Key design principles
 

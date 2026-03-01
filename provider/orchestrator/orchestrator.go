@@ -14,6 +14,7 @@ import (
 
 	extism "github.com/extism/go-sdk"
 	nats "github.com/nats-io/nats.go"
+	natsjetstream "github.com/nats-io/nats.go/jetstream"
 
 	"github.com/jolucas/wasm-af/pkg/taskstate"
 )
@@ -38,6 +39,7 @@ type Orchestrator struct {
 	pluginMaxHTTPBytes   int64
 
 	natsConn            *nats.Conn
+	configKV            natsjetstream.KeyValue
 	approvalWebhookURL  string
 	approvalTimeoutSec  int
 }

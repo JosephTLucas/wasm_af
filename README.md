@@ -47,7 +47,16 @@ WASM_AF is built on this premise: capabilities granted structurally at instantia
 │  ┌──────────┐  ┌──────────────┐  ┌───────────────────────┐  │
 │  │ HTTP API │  │ Plan Builder │  │ Task State (NATS KV)  │  │
 │  │ :8080    │──│              │──│ + Audit Log           │  │
-│  └──────────┘  └──────┬───────┘  └───────────────────────┘  │
+│  └──┬───────┘  └──────┬───────┘  └───────────────────────┘  │
+│     │                 │                                      │
+│     │ POST /agents    │                                      │
+│     ▼                 │                                      │
+│  ┌──────────────┐     │                                      │
+│  │ BYOA Upload  │     │                                      │
+│  │ • validate   │     │                                      │
+│  │ • register   ├─────┤  Agent Registry (thread-safe)        │
+│  │ • persist KV │     │  • platform agents (startup JSON)    │
+│  └──────────────┘     │  • external agents (runtime upload)  │
 │                       │                                      │
 │            ┌──────────┴──────────┐                           │
 │            │     Step Runner     │                           │
@@ -76,6 +85,8 @@ WASM_AF is built on this premise: capabilities granted structurally at instantia
 │  │  • structured decisions: allowed_hosts, │                │
 │  │    memory, timeout, config, paths,      │                │
 │  │    host_functions                       │                │
+│  │  • BYOA tier: untrusted cap → max       │                │
+│  │    restriction + approval gate          │                │
 │  └──────────────────────────────────────────┘                │
 │                                                              │
 │  ┌──────────────────────────────────────────┐                │
@@ -109,6 +120,8 @@ nats kv put wasm-af-config allowed-fetch-domains "webassembly.org,wasmcloud.com"
 
 **Ephemeral lifecycle.** Each plugin is `NewPlugin` → `Call("execute")` → `Close` within a single Go function scope. Between steps, there is no process to attack, no memory to dump. An agent that doesn't exist can't be exploited.
 
+**Bring your own agent.** External WASM modules can be uploaded to a running orchestrator via `POST /agents`. They are validated (must export `execute`), stored on disk, and registered with a forced `capability: "untrusted"`. The BYOA Rego policy tier (`policies/byoa.rego`) applies strict sandbox defaults — no host functions, no network, 4 MiB memory, 10s timeout, mandatory approval — ensuring that tenant-supplied code runs in the tightest possible sandbox without any per-agent policy authoring. An approved-list in OPA data (live-updatable via NATS KV) controls which external agents are allowed to execute. Registrations persist across restarts via NATS KV and sync across replicas.
+
 **Human-in-the-loop approval gates.** When OPA policy returns `requires_approval: true` for a step, the orchestrator pauses that step instead of executing it. The step enters `awaiting_approval` status, an event is published to NATS (`wasm-af.approvals.<task_id>`) and optionally POSTed to a webhook, and the task goroutine parks itself. Other branches of the DAG continue running. Execution resumes only after an explicit approve or reject via the HTTP API. This keeps the human interface out of the framework — any system (Slack bot, chat UI, CLI, dashboard) can handle the approval by calling two endpoints.
 
 ```rego
@@ -138,6 +151,34 @@ approval_reason := "email delivery requires human approval" if { input.step.agen
 
 Approving a step transitions it back to `pending` and re-launches the task. Rejecting transitions it to `denied`. Both are recorded in the audit log.
 
+### Bring Your Own Agent (BYOA)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/agents` | Upload a `.wasm` binary + metadata (multipart form) |
+| `DELETE` | `/agents/{name}` | Remove an external agent (platform agents are protected) |
+| `GET` | `/agents` | List all agents (includes `external` flag) |
+
+External agents are registered at runtime and automatically receive `capability: "untrusted"` with zero host functions. The BYOA policy tier (`policies/byoa.rego`) enforces strict sandbox defaults: 4 MiB memory, 10s timeout, no network, no host functions, and mandatory human approval. Agents must also appear in `data.config.approved_external_agents` before they can execute.
+
+```bash
+# Upload an external agent
+curl -X POST localhost:8080/agents \
+  -F 'meta={"name":"my-agent","context_key":"my_agent_result"}' \
+  -F 'wasm=@my_agent.wasm'
+
+# Approve it for execution (update OPA data via NATS KV)
+nats kv put wasm-af-config approved-external-agents "my-agent"
+
+# List registered agents
+curl localhost:8080/agents | jq .
+
+# Remove it
+curl -X DELETE localhost:8080/agents/my-agent
+```
+
+See [docs/creating-an-agent.md](docs/creating-an-agent.md) for the full guide, including both the platform agent (Rust crate) and external agent (BYOA upload) flows.
+
 ---
 
 ## Project Structure
@@ -158,7 +199,9 @@ wasm_af/
 │   ├── hostfns_sandbox.go          # sandbox_exec: runs code in a nested Wazero instance
 │   ├── hostfns_email.go            # send_email: SMTP delivery via host fn (creds in closure)
 │   ├── llm.go                      # llm_complete host function provider (mock / API / Ollama)
-│   ├── registry.go                 # agent registry with enrichments
+│   ├── registry.go                 # agent registry (thread-safe, mutable at runtime)
+│   ├── byoa.go                     # BYOA: upload, remove, list external agents + NATS KV sync
+│   ├── validate.go                 # WASM validation (checks execute export exists)
 │   ├── builders.go                 # plan builders (including generic JSON-driven)
 │   ├── builder_chat.go             # chat + skill-demo plan builders
 │   ├── builder_email_reply.go      # email-reply + reply-all (parallel DAG) plan builders
@@ -166,6 +209,9 @@ wasm_af/
 │   └── approval.go                 # human-in-the-loop: NATS publish, webhook callback, timeout
 │
 ├── cmd/webhook-gateway/            # lightweight HTTP gateway (chat message → task → poll)
+│
+├── policies/                       # reusable OPA policy modules
+│   └── byoa.rego                   # untrusted-agent sandbox tier (drop-in alongside your policy.rego)
 │
 ├── pkg/dag/                        # DAG: dependency graph, ready-set, ancestors, splice
 │

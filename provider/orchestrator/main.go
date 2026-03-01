@@ -224,6 +224,7 @@ func run(logger *slog.Logger) error {
 		pluginMaxMemoryPages: uint32(pluginMaxMemPages),
 		pluginMaxHTTPBytes:   pluginMaxHTTPBytes,
 		natsConn:             nc,
+		configKV:             configKV,
 		approvalWebhookURL:   approvalWebhookURL,
 		approvalTimeoutSec:   approvalTimeoutSec,
 	}
@@ -288,12 +289,58 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
+	// ── BYOA: seed external agents from NATS KV ────────────────────────────
+	if entry, err := configKV.Get(ctx, "external-agents"); err == nil {
+		if n, seedErr := seedExternalAgents(registry, entry.Value()); seedErr != nil {
+			logger.Error("failed to seed external agents from KV", "err", seedErr)
+		} else if n > 0 {
+			logger.Info("seeded external agents from KV", "count", n)
+		}
+	}
+
+	// Watch for live updates to the external agent registry.
+	go func() {
+		watcher, err := configKV.Watch(ctx, "external-agents")
+		if err != nil {
+			logger.Error("failed to start external-agents watcher", "err", err)
+			return
+		}
+		defer watcher.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case update, ok := <-watcher.Updates():
+				if !ok {
+					return
+				}
+				if update == nil {
+					continue
+				}
+				switch update.Operation() {
+				case natsjetstream.KeyValueDelete, natsjetstream.KeyValuePurge:
+					clearExternalAgents(registry)
+					logger.Info("external agents cleared from registry")
+				default:
+					if n, err := seedExternalAgents(registry, update.Value()); err != nil {
+						logger.Error("failed to sync external agents from KV", "err", err)
+					} else {
+						logger.Info("external agents synced from KV", "count", n)
+					}
+				}
+			}
+		}
+	}()
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /tasks", orch.handleSubmitTask)
 	mux.HandleFunc("GET /tasks/{id}", orch.handleGetTask)
 	mux.HandleFunc("GET /tasks/{id}/approvals", orch.handleListApprovals)
 	mux.HandleFunc("POST /tasks/{id}/steps/{stepId}/approve", orch.handleApproveStep)
 	mux.HandleFunc("POST /tasks/{id}/steps/{stepId}/reject", orch.handleRejectStep)
+	mux.HandleFunc("POST /agents", orch.handleRegisterAgent)
+	mux.HandleFunc("DELETE /agents/{name}", orch.handleRemoveAgent)
+	mux.HandleFunc("GET /agents", orch.handleListAgents)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})

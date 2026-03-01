@@ -131,10 +131,24 @@ POST /message { message: "calculate fibonacci of 10" }
 | email-read | email | (none) | OPA-injected key; no network |
 | responder | llm | llm_complete | LLM only, no I/O |
 
+## Bring Your Own Agent (BYOA)
+
+External WASM agents can be uploaded at runtime via `POST /agents`. They receive `capability: "untrusted"` and are sandboxed by the BYOA policy tier. To enable it, copy `policies/byoa.rego` alongside `policy.rego` — the rules merge automatically.
+
+Approve external agents for execution by adding them to `data.json`:
+
+```json
+"approved_external_agents": ["my-custom-agent"]
+```
+
+Or update at runtime: `nats kv put wasm-af-config approved-external-agents "my-custom-agent"`.
+
+See [docs/creating-an-agent.md](../../docs/creating-an-agent.md) section 8 for the full BYOA guide.
+
 ## Files
 
 - `agents.json` — agent registry
-- `data.json` — OPA data: allowlists, feature flags, jailbreak patterns
+- `data.json` — OPA data: allowlists, feature flags, jailbreak patterns, BYOA approved list
 - `policy.rego` — step policy (authz, shell hardening, jailbreak gate, approval gates)
 - `submit.rego` — submission policy (data-driven via `allowed_task_types`)
 - `jailbreak.rego` — standalone scanner for ad-hoc `opa eval`
