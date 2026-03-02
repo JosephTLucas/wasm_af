@@ -107,15 +107,9 @@ impl Default for LlmState {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct KvState {
     pub memory_kv: Option<std::sync::Arc<async_nats::jetstream::kv::Store>>,
-}
-
-impl Default for KvState {
-    fn default() -> Self {
-        Self { memory_kv: None }
-    }
 }
 
 #[derive(Clone)]
@@ -162,30 +156,14 @@ impl Default for SandboxState {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct EmailState {
     pub allowed_domains: HashMap<String, bool>,
 }
 
-impl Default for EmailState {
-    fn default() -> Self {
-        Self {
-            allowed_domains: HashMap::new(),
-        }
-    }
-}
-
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct ConfigState {
     pub values: HashMap<String, String>,
-}
-
-impl Default for ConfigState {
-    fn default() -> Self {
-        Self {
-            values: HashMap::new(),
-        }
-    }
 }
 
 // ---- Trait implementations for the generated WIT bindings ----
@@ -597,7 +575,7 @@ impl host_sandbox::Host for HostState {
         wasi_builder.stdout(stdout_pipe.clone());
         wasi_builder.stderr(stderr_pipe.clone());
         wasi_builder.arg(&req.language);
-        wasi_builder.arg(&format!("/sandbox/{script_name}"));
+        wasi_builder.arg(format!("/sandbox/{script_name}"));
         for a in &req.args {
             wasi_builder.arg(a);
         }

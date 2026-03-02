@@ -176,7 +176,7 @@ impl Graph {
         self.parents.remove(new_id);
         self.children.remove(new_id);
         if let Some(cs) = self.children.get_mut(after) {
-            remove_from_vec(cs, &new_id.to_string());
+            remove_from_vec(cs, new_id);
         }
     }
 

@@ -198,7 +198,7 @@ async fn main() -> anyhow::Result<()> {
         sandbox_state,
         email_state,
         plugin_timeout: Duration::from_secs(plugin_timeout_sec),
-        plugin_max_mem_pages: plugin_max_mem_pages,
+        plugin_max_mem_pages,
         config_kv,
         approval_webhook_url: env_or("APPROVAL_WEBHOOK_URL", ""),
         approval_timeout_sec: env_or_u64("APPROVAL_TIMEOUT_SEC", 0),
@@ -206,16 +206,14 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Seed allowed-fetch-domains from NATS KV into OPA data store.
-    if let Ok(entry) = orch.config_kv.entry("allowed-fetch-domains").await {
-        if let Some(entry) = entry {
-            let domains = parse_comma_vec(&String::from_utf8_lossy(&entry.value));
-            if let Ok(mut p) = orch.policy.lock() {
-                let _ = p.update_data("/config/allowed_domains", serde_json::json!(domains));
-                info!(
-                    count = domains.len(),
-                    "seeded allowed-fetch-domains from KV"
-                );
-            }
+    if let Ok(Some(entry)) = orch.config_kv.entry("allowed-fetch-domains").await {
+        let domains = parse_comma_vec(&String::from_utf8_lossy(&entry.value));
+        if let Ok(mut p) = orch.policy.lock() {
+            let _ = p.update_data("/config/allowed_domains", serde_json::json!(domains));
+            info!(
+                count = domains.len(),
+                "seeded allowed-fetch-domains from KV"
+            );
         }
     }
 
