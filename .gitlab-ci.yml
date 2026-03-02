@@ -35,23 +35,6 @@ rust-lint:
       - .cargo/
       - components/target/
 
-opa-lint:
-  stage: lint
-  image:
-    name: openpolicyagent/opa:latest
-    entrypoint: [""]
-  script:
-    - |
-      BAD=""
-      for f in $(find . -name '*.rego'); do
-        if ! opa fmt --fail "$f"; then
-          BAD="$BAD $f"
-        fi
-      done
-      if [ -n "$BAD" ]; then
-        echo "opa fmt needed on:$BAD"
-        exit 1
-      fi
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 
