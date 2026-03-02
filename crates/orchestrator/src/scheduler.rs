@@ -140,15 +140,18 @@ impl Orchestrator {
                             warn!(step_id = %sid, err = %e, "step failed");
                             let err_msg = e.to_string();
                             let s = sid.clone();
-                            let _ = orch.store.update(&tid, |st| {
-                                if let Some(i) = step_index(&st.plan, &s) {
-                                    if st.plan[i].status == StepStatus::Running {
-                                        st.plan[i].status = StepStatus::Failed;
-                                        st.plan[i].error = err_msg.clone();
+                            let _ = orch
+                                .store
+                                .update(&tid, |st| {
+                                    if let Some(i) = step_index(&st.plan, &s) {
+                                        if st.plan[i].status == StepStatus::Running {
+                                            st.plan[i].status = StepStatus::Failed;
+                                            st.plan[i].error = err_msg.clone();
+                                        }
                                     }
-                                }
-                                Ok(())
-                            }).await;
+                                    Ok(())
+                                })
+                                .await;
                         }
                     }));
                 }
@@ -176,10 +179,7 @@ impl Orchestrator {
                     if let Ok(meta) = self.registry.get(&step.agent_type) {
                         if meta.splice {
                             splice_counter += 1;
-                            if let Err(e) = self
-                                .handle_splice(&state, step, splice_counter)
-                                .await
-                            {
+                            if let Err(e) = self.handle_splice(&state, step, splice_counter).await {
                                 warn!(step_id = %step_id, err = %e, "splice failed");
                             }
                         }
@@ -212,16 +212,26 @@ impl Orchestrator {
                     let next_non: HashSet<String> = state
                         .plan
                         .iter()
-                        .filter(|s| matches!(s.status, StepStatus::Failed | StepStatus::Denied | StepStatus::AwaitingApproval))
+                        .filter(|s| {
+                            matches!(
+                                s.status,
+                                StepStatus::Failed
+                                    | StepStatus::Denied
+                                    | StepStatus::AwaitingApproval
+                            )
+                        })
                         .map(|s| s.id.clone())
                         .collect();
                     let next_ready = next_g.ready(&next_completed);
                     let can_dispatch = next_ready.iter().any(|id| !next_non.contains(id));
                     if !can_dispatch {
-                        let _ = self.store.update(&task_id, |s| {
-                            s.status = Status::AwaitingApproval;
-                            Ok(())
-                        }).await;
+                        let _ = self
+                            .store
+                            .update(&task_id, |s| {
+                                s.status = Status::AwaitingApproval;
+                                Ok(())
+                            })
+                            .await;
                         info!(task_id = %log_id, "task parked, awaiting approval");
                         return;
                     }
@@ -235,10 +245,13 @@ impl Orchestrator {
             .iter()
             .any(|s| s.status == StepStatus::AwaitingApproval);
         if has_awaiting {
-            let _ = self.store.update(&task_id, |s| {
-                s.status = Status::AwaitingApproval;
-                Ok(())
-            }).await;
+            let _ = self
+                .store
+                .update(&task_id, |s| {
+                    s.status = Status::AwaitingApproval;
+                    Ok(())
+                })
+                .await;
             info!(task_id = %log_id, "task parked, awaiting approval");
             return;
         }
@@ -247,10 +260,7 @@ impl Orchestrator {
             .plan
             .iter()
             .any(|s| s.status == StepStatus::Failed || s.status == StepStatus::Denied);
-        let all_completed = state
-            .plan
-            .iter()
-            .all(|s| s.status == StepStatus::Completed);
+        let all_completed = state.plan.iter().all(|s| s.status == StepStatus::Completed);
 
         if all_completed {
             let _ = self
@@ -261,14 +271,19 @@ impl Orchestrator {
                 })
                 .await;
         } else {
-            self.fail_task(&task_id, "one or more steps failed or were denied").await;
+            self.fail_task(&task_id, "one or more steps failed or were denied")
+                .await;
         }
 
         let _ = self
             .store
             .append_audit(&mut AuditEvent {
                 task_id: task_id.clone(),
-                event_type: if all_completed { EventType::TaskCompleted } else { EventType::TaskFailed },
+                event_type: if all_completed {
+                    EventType::TaskCompleted
+                } else {
+                    EventType::TaskFailed
+                },
                 timestamp: Utc::now(),
                 ..Default::default()
             })
@@ -343,14 +358,8 @@ impl Orchestrator {
         };
 
         if !policy_result.permitted {
-            let deny_msg = policy_result
-                .deny_message
-                .as_deref()
-                .unwrap_or("denied");
-            let deny_code = policy_result
-                .deny_code
-                .clone()
-                .unwrap_or_default();
+            let deny_msg = policy_result.deny_message.as_deref().unwrap_or("denied");
+            let deny_code = policy_result.deny_code.clone().unwrap_or_default();
             self.store
                 .update(task_id, |s| {
                     if let Some(idx) = step_index(&s.plan, &step_id) {
@@ -614,11 +623,7 @@ impl Orchestrator {
         entries
     }
 
-    fn collect_prior_results(
-        &self,
-        state: &TaskState,
-        step_id: &str,
-    ) -> HashMap<String, String> {
+    fn collect_prior_results(&self, state: &TaskState, step_id: &str) -> HashMap<String, String> {
         self.collect_ancestor_outputs(state, step_id)
             .into_iter()
             .map(|(key, values)| {
@@ -764,6 +769,4 @@ impl Orchestrator {
             })
             .await;
     }
-
 }
-

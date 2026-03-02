@@ -27,8 +27,8 @@ struct SummaryOutput {
 
 impl Guest for SummarizerAgent {
     fn execute(input: TaskInput) -> Result<TaskOutput, String> {
-        let req: SummarizerInput =
-            serde_json::from_str(&input.payload).map_err(|e| format!("payload parse error: {e}"))?;
+        let req: SummarizerInput = serde_json::from_str(&input.payload)
+            .map_err(|e| format!("payload parse error: {e}"))?;
 
         let mut context_parts = Vec::new();
         for kv in &input.context {

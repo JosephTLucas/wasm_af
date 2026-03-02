@@ -143,10 +143,7 @@ fn parse_authz_result(value: &regorus::Value) -> Result<PolicyResult, anyhow::Er
         }
     };
 
-    let allowed = obj
-        .get("allow")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let allowed = obj.get("allow").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if !allowed {
         return Ok(PolicyResult {
@@ -230,10 +227,7 @@ fn parse_submit_result(value: &regorus::Value) -> Result<PolicyResult, anyhow::E
         });
     }
 
-    let allowed = obj
-        .get("allow")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    let allowed = obj.get("allow").and_then(|v| v.as_bool()).unwrap_or(false);
 
     if allowed {
         return Ok(PolicyResult {
@@ -344,7 +338,10 @@ mod tests {
         let r = parse_authz_result(&v).unwrap();
         assert!(!r.permitted);
         assert_eq!(r.deny_code.as_deref(), Some("UNTRUSTED"));
-        assert_eq!(r.deny_message.as_deref(), Some("agent not in approved list"));
+        assert_eq!(
+            r.deny_message.as_deref(),
+            Some("agent not in approved list")
+        );
     }
 
     #[test]
@@ -446,11 +443,15 @@ mod tests {
         let modules = HashMap::from([("test.rego".into(), policy.into())]);
         let mut eval = OpaEvaluator::new(&modules, None).unwrap();
 
-        let allowed = eval.evaluate_step(serde_json::json!({"step": {"agent_type": "memory"}})).unwrap();
+        let allowed = eval
+            .evaluate_step(serde_json::json!({"step": {"agent_type": "memory"}}))
+            .unwrap();
         assert!(allowed.permitted);
         assert_eq!(allowed.host_functions, vec!["kv_get", "kv_put"]);
 
-        let denied = eval.evaluate_step(serde_json::json!({"step": {"agent_type": "shell"}})).unwrap();
+        let denied = eval
+            .evaluate_step(serde_json::json!({"step": {"agent_type": "shell"}}))
+            .unwrap();
         assert!(!denied.permitted);
     }
 
@@ -465,10 +466,14 @@ mod tests {
         let modules = HashMap::from([("submit.rego".into(), policy.into())]);
         let mut eval = OpaEvaluator::new(&modules, None).unwrap();
 
-        let ok = eval.evaluate_submit(serde_json::json!({"task_type": "chat"})).unwrap();
+        let ok = eval
+            .evaluate_submit(serde_json::json!({"task_type": "chat"}))
+            .unwrap();
         assert!(ok.permitted);
 
-        let denied = eval.evaluate_submit(serde_json::json!({"task_type": "evil"})).unwrap();
+        let denied = eval
+            .evaluate_submit(serde_json::json!({"task_type": "evil"}))
+            .unwrap();
         assert!(!denied.permitted);
     }
 
@@ -482,12 +487,17 @@ mod tests {
         let modules = HashMap::from([("test.rego".into(), policy.into())]);
         let mut eval = OpaEvaluator::new(&modules, None).unwrap();
 
-        let denied = eval.evaluate_step(serde_json::json!({"step": {"agent_type": "shell"}})).unwrap();
+        let denied = eval
+            .evaluate_step(serde_json::json!({"step": {"agent_type": "shell"}}))
+            .unwrap();
         assert!(!denied.permitted);
 
-        eval.update_data("/config/allowed_agents", serde_json::json!(["shell"])).unwrap();
+        eval.update_data("/config/allowed_agents", serde_json::json!(["shell"]))
+            .unwrap();
 
-        let allowed = eval.evaluate_step(serde_json::json!({"step": {"agent_type": "shell"}})).unwrap();
+        let allowed = eval
+            .evaluate_step(serde_json::json!({"step": {"agent_type": "shell"}}))
+            .unwrap();
         assert!(allowed.permitted);
     }
 }

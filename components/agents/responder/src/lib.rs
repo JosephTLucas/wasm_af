@@ -33,8 +33,8 @@ fn scope_email_context(raw: &str, idx: usize) -> Option<String> {
 
 impl Guest for ResponderAgent {
     fn execute(input: TaskInput) -> Result<TaskOutput, String> {
-        let req: ResponderInput =
-            serde_json::from_str(&input.payload).map_err(|e| format!("payload parse error: {e}"))?;
+        let req: ResponderInput = serde_json::from_str(&input.payload)
+            .map_err(|e| format!("payload parse error: {e}"))?;
 
         if req.message.trim().is_empty() {
             return Err("message field is required and must not be empty".to_string());

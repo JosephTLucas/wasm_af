@@ -112,11 +112,9 @@ impl Store {
         F: Fn(&mut TaskState) -> Result<(), String>,
     {
         for attempt in 0..MAX_CAS_RETRIES {
-            let entry = self
-                .tasks
-                .entry(task_id)
-                .await
-                .map_err(|e| StoreError::Nats(format!("cas read (attempt {}): {e}", attempt + 1)))?;
+            let entry = self.tasks.entry(task_id).await.map_err(|e| {
+                StoreError::Nats(format!("cas read (attempt {}): {e}", attempt + 1))
+            })?;
 
             let entry = match entry {
                 Some(e) => e,
@@ -145,7 +143,10 @@ impl Store {
                 }
             }
         }
-        Err(StoreError::CasConflict(MAX_CAS_RETRIES, task_id.to_string()))
+        Err(StoreError::CasConflict(
+            MAX_CAS_RETRIES,
+            task_id.to_string(),
+        ))
     }
 
     pub async fn delete(&self, task_id: &str) -> Result<(), StoreError> {

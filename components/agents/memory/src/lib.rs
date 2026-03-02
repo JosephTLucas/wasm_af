@@ -98,8 +98,8 @@ impl Guest for MemoryAgent {
             },
         };
 
-        let payload = serde_json::to_string(&output)
-            .map_err(|e| format!("serialization error: {e}"))?;
+        let payload =
+            serde_json::to_string(&output).map_err(|e| format!("serialization error: {e}"))?;
 
         Ok(TaskOutput {
             payload,

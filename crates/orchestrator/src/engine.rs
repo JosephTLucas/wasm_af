@@ -2,8 +2,8 @@ use crate::host::HostState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tracing::info;
 use std::time::Duration;
+use tracing::info;
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Config, Engine, Store, StoreLimitsBuilder};
 
@@ -200,9 +200,7 @@ impl WasmEngine {
         wit::host_config::add_to_linker::<_, HasSelf<_>>(&mut linker, |x| x)?;
 
         let mem_bytes = opts.max_mem_pages as usize * 65536;
-        host_state.store_limits = StoreLimitsBuilder::new()
-            .memory_size(mem_bytes)
-            .build();
+        host_state.store_limits = StoreLimitsBuilder::new().memory_size(mem_bytes).build();
 
         let mut store = Store::new(&self.engine, host_state);
         store.limiter(|state| &mut state.store_limits);
@@ -334,13 +332,34 @@ mod tests {
 
     #[test]
     fn capability_from_name_all_variants() {
-        assert_eq!(HostCapability::from_name("llm_complete"), Some(HostCapability::Llm));
-        assert_eq!(HostCapability::from_name("kv_get"), Some(HostCapability::Kv));
-        assert_eq!(HostCapability::from_name("kv_put"), Some(HostCapability::Kv));
-        assert_eq!(HostCapability::from_name("exec_command"), Some(HostCapability::Exec));
-        assert_eq!(HostCapability::from_name("sandbox_exec"), Some(HostCapability::Sandbox));
-        assert_eq!(HostCapability::from_name("send_email"), Some(HostCapability::Email));
-        assert_eq!(HostCapability::from_name("http"), Some(HostCapability::Http));
+        assert_eq!(
+            HostCapability::from_name("llm_complete"),
+            Some(HostCapability::Llm)
+        );
+        assert_eq!(
+            HostCapability::from_name("kv_get"),
+            Some(HostCapability::Kv)
+        );
+        assert_eq!(
+            HostCapability::from_name("kv_put"),
+            Some(HostCapability::Kv)
+        );
+        assert_eq!(
+            HostCapability::from_name("exec_command"),
+            Some(HostCapability::Exec)
+        );
+        assert_eq!(
+            HostCapability::from_name("sandbox_exec"),
+            Some(HostCapability::Sandbox)
+        );
+        assert_eq!(
+            HostCapability::from_name("send_email"),
+            Some(HostCapability::Email)
+        );
+        assert_eq!(
+            HostCapability::from_name("http"),
+            Some(HostCapability::Http)
+        );
     }
 
     #[test]

@@ -109,8 +109,7 @@ impl Guest for RouterAgent {
             temperature: Some(0.0),
         };
 
-        let llm_resp =
-            llm_complete(&llm_req).map_err(|e| format!("LLM error: {e}"))?;
+        let llm_resp = llm_complete(&llm_req).map_err(|e| format!("LLM error: {e}"))?;
 
         let raw = llm_resp.content.trim();
         let json_str = match raw.rfind("</think>") {
@@ -125,14 +124,13 @@ impl Guest for RouterAgent {
             .map(|s| s.trim())
             .unwrap_or(json_str);
 
-        let route: RouterOutput =
-            serde_json::from_str(json_str).unwrap_or_else(|_| RouterOutput {
-                skill: "direct-answer".to_string(),
-                params: RouterParams::default(),
-            });
+        let route: RouterOutput = serde_json::from_str(json_str).unwrap_or_else(|_| RouterOutput {
+            skill: "direct-answer".to_string(),
+            params: RouterParams::default(),
+        });
 
-        let payload = serde_json::to_string(&route)
-            .map_err(|e| format!("serialization error: {e}"))?;
+        let payload =
+            serde_json::to_string(&route).map_err(|e| format!("serialization error: {e}"))?;
 
         Ok(TaskOutput {
             payload,

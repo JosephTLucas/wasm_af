@@ -29,8 +29,8 @@ struct FileOpsOutput {
 
 impl Guest for FileOpsAgent {
     fn execute(input: TaskInput) -> Result<TaskOutput, String> {
-        let req: FileOpsInput =
-            serde_json::from_str(&input.payload).map_err(|e| format!("payload parse error: {e}"))?;
+        let req: FileOpsInput = serde_json::from_str(&input.payload)
+            .map_err(|e| format!("payload parse error: {e}"))?;
 
         let output = match req.op.as_str() {
             "read" => {

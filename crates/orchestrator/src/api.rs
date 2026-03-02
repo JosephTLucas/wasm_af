@@ -49,7 +49,10 @@ pub async fn handle_submit_task(
                 return Err((StatusCode::FORBIDDEN, msg));
             }
             Err(e) => {
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("policy error: {e}")));
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("policy error: {e}"),
+                ));
             }
             _ => {}
         }
@@ -246,9 +249,7 @@ pub struct AgentInfo {
     pub external: bool,
 }
 
-pub async fn handle_list_agents(
-    State(orch): State<AppState>,
-) -> Json<Vec<AgentInfo>> {
+pub async fn handle_list_agents(State(orch): State<AppState>) -> Json<Vec<AgentInfo>> {
     let agents = orch.registry.list();
     let list: Vec<AgentInfo> = agents
         .into_iter()
@@ -299,7 +300,8 @@ pub async fn handle_register_agent(
         }
     }
 
-    let meta_str = meta_json.ok_or((StatusCode::BAD_REQUEST, "missing 'meta' field".to_string()))?;
+    let meta_str =
+        meta_json.ok_or((StatusCode::BAD_REQUEST, "missing 'meta' field".to_string()))?;
     let wasm = wasm_bytes.ok_or((StatusCode::BAD_REQUEST, "missing 'wasm' field".to_string()))?;
 
     #[derive(Deserialize)]
@@ -329,7 +331,10 @@ pub async fn handle_register_agent(
     }
 
     if wasm.len() > 10 * 1024 * 1024 {
-        return Err((StatusCode::BAD_REQUEST, "wasm too large (max 10 MiB)".to_string()));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "wasm too large (max 10 MiB)".to_string(),
+        ));
     }
 
     orch.engine
@@ -344,11 +349,10 @@ pub async fn handle_register_agent(
     let tmp_path = external_path.join(format!(".{}.wasm.tmp", upload.name));
     std::fs::write(&tmp_path, &wasm)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("write tmp: {e}")))?;
-    std::fs::rename(&tmp_path, &final_path)
-        .map_err(|e| {
-            let _ = std::fs::remove_file(&tmp_path);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("rename: {e}"))
-        })?;
+    std::fs::rename(&tmp_path, &final_path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        (StatusCode::INTERNAL_SERVER_ERROR, format!("rename: {e}"))
+    })?;
 
     let context_key = if upload.context_key.is_empty() {
         format!("{}_result", upload.name)
@@ -373,7 +377,10 @@ pub async fn handle_register_agent(
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e}")))?;
 
     info!(name = %upload.name, "external agent registered");
-    Ok((StatusCode::CREATED, format!("agent {} registered", upload.name)))
+    Ok((
+        StatusCode::CREATED,
+        format!("agent {} registered", upload.name),
+    ))
 }
 
 pub async fn handle_remove_agent(
@@ -405,7 +412,13 @@ fn build_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
     }
 }
 
-fn make_step(task_id: &str, idx: usize, agent_type: &str, deps: &[usize], params: HashMap<String, String>) -> Step {
+fn make_step(
+    task_id: &str,
+    idx: usize,
+    agent_type: &str,
+    deps: &[usize],
+    params: HashMap<String, String>,
+) -> Step {
     let id = format!("{task_id}-step-{idx}");
     let depends_on: Vec<String> = deps.iter().map(|d| format!("{task_id}-step-{d}")).collect();
     Step {
@@ -425,20 +438,40 @@ fn make_step(task_id: &str, idx: usize, agent_type: &str, deps: &[usize], params
 fn build_chat_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
     let msg = req.query.clone();
     vec![
-        make_step(task_id, 0, "memory", &[], HashMap::from([
-            ("op".to_string(), "get".to_string()),
-            ("key".to_string(), "conversation".to_string()),
-        ])),
-        make_step(task_id, 1, "router", &[0], HashMap::from([
-            ("message".to_string(), msg.clone()),
-        ])),
-        make_step(task_id, 2, "responder", &[1], HashMap::from([
-            ("message".to_string(), msg.clone()),
-        ])),
-        make_step(task_id, 3, "memory", &[2], HashMap::from([
-            ("op".to_string(), "append".to_string()),
-            ("key".to_string(), "conversation".to_string()),
-        ])),
+        make_step(
+            task_id,
+            0,
+            "memory",
+            &[],
+            HashMap::from([
+                ("op".to_string(), "get".to_string()),
+                ("key".to_string(), "conversation".to_string()),
+            ]),
+        ),
+        make_step(
+            task_id,
+            1,
+            "router",
+            &[0],
+            HashMap::from([("message".to_string(), msg.clone())]),
+        ),
+        make_step(
+            task_id,
+            2,
+            "responder",
+            &[1],
+            HashMap::from([("message".to_string(), msg.clone())]),
+        ),
+        make_step(
+            task_id,
+            3,
+            "memory",
+            &[2],
+            HashMap::from([
+                ("op".to_string(), "append".to_string()),
+                ("key".to_string(), "conversation".to_string()),
+            ]),
+        ),
     ]
 }
 
@@ -464,9 +497,13 @@ fn build_email_reply_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
     }
 
     vec![
-        make_step(task_id, 0, "email-read", &[], HashMap::from([
-            ("folder".to_string(), "inbox".to_string()),
-        ])),
+        make_step(
+            task_id,
+            0,
+            "email-read",
+            &[],
+            HashMap::from([("folder".to_string(), "inbox".to_string())]),
+        ),
         make_step(task_id, 1, "responder", &[0], responder_params),
         make_step(task_id, 2, "email-send", &[1], send_params),
     ]
@@ -474,15 +511,19 @@ fn build_email_reply_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
 
 /// Reply-all: email-read -> parallel responder branches -> parallel email-send branches
 fn build_reply_all_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
-    let count: usize = req.context.get("email_count")
+    let count: usize = req
+        .context
+        .get("email_count")
         .and_then(|c| c.parse().ok())
         .unwrap_or(2);
 
-    let mut steps = vec![
-        make_step(task_id, 0, "email-read", &[], HashMap::from([
-            ("folder".to_string(), "inbox".to_string()),
-        ])),
-    ];
+    let mut steps = vec![make_step(
+        task_id,
+        0,
+        "email-read",
+        &[],
+        HashMap::from([("folder".to_string(), "inbox".to_string())]),
+    )];
 
     for i in 0..count {
         let resp_idx = 1 + i * 2;
@@ -506,7 +547,13 @@ fn build_reply_all_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
         }
 
         steps.push(make_step(task_id, resp_idx, "responder", &[0], resp_params));
-        steps.push(make_step(task_id, send_idx, "email-send", &[resp_idx], send_params));
+        steps.push(make_step(
+            task_id,
+            send_idx,
+            "email-send",
+            &[resp_idx],
+            send_params,
+        ));
     }
 
     steps
@@ -523,23 +570,36 @@ fn build_fan_out_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
     let urls: Vec<String> = req
         .context
         .get("urls")
-        .map(|u| u.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .map(|u| {
+            u.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
 
     if urls.is_empty() {
         let mut steps = Vec::new();
-        steps.push(make_step(task_id, 0, "web-search", &[], HashMap::from([
-            ("query".to_string(), req.query.clone()),
-        ])));
+        steps.push(make_step(
+            task_id,
+            0,
+            "web-search",
+            &[],
+            HashMap::from([("query".to_string(), req.query.clone())]),
+        ));
         steps.push(make_step(task_id, 1, "summarizer", &[0], HashMap::new()));
         return steps;
     }
 
     let mut steps = Vec::new();
     for (i, url) in urls.iter().enumerate() {
-        steps.push(make_step(task_id, i, "url-fetch", &[], HashMap::from([
-            ("url".to_string(), url.clone()),
-        ])));
+        steps.push(make_step(
+            task_id,
+            i,
+            "url-fetch",
+            &[],
+            HashMap::from([("url".to_string(), url.clone())]),
+        ));
     }
     let fetch_indices: Vec<usize> = (0..urls.len()).collect();
     steps.push(make_step(
@@ -677,9 +737,11 @@ mod tests {
 
     #[test]
     fn fan_out_plan_with_urls() {
-        let r = req("fan-out-summarizer", "", vec![
-            ("urls", "https://a.com,https://b.com,https://c.com"),
-        ]);
+        let r = req(
+            "fan-out-summarizer",
+            "",
+            vec![("urls", "https://a.com,https://b.com,https://c.com")],
+        );
         let plan = build_plan(&r, "t1");
         // 3 url-fetch + 1 summarizer = 4
         assert_eq!(plan.len(), 4);
@@ -691,9 +753,11 @@ mod tests {
 
     #[test]
     fn fan_out_summarizer_depends_on_all_fetches() {
-        let r = req("fan-out-summarizer", "", vec![
-            ("urls", "https://a.com,https://b.com"),
-        ]);
+        let r = req(
+            "fan-out-summarizer",
+            "",
+            vec![("urls", "https://a.com,https://b.com")],
+        );
         let plan = build_plan(&r, "t1");
         let summarizer = plan.last().unwrap();
         assert_eq!(summarizer.agent_type, "summarizer");

@@ -32,8 +32,7 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .json()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -55,7 +54,9 @@ async fn main() -> anyhow::Result<()> {
         })
         .map_err(|_| anyhow::anyhow!("AGENT_REGISTRY or AGENT_REGISTRY_FILE is required"))?;
 
-    let registry = Arc::new(registry::AgentRegistry::parse(agent_registry_json.as_bytes())?);
+    let registry = Arc::new(registry::AgentRegistry::parse(
+        agent_registry_json.as_bytes(),
+    )?);
     info!("loaded agent registry");
 
     // OPA policy
@@ -146,9 +147,8 @@ async fn main() -> anyhow::Result<()> {
     // Sandbox config
     let mut sandbox_config = wasmtime::Config::new();
     sandbox_config.consume_fuel(true);
-    let sandbox_engine = std::sync::Arc::new(
-        wasmtime::Engine::new(&sandbox_config).expect("sandbox engine"),
-    );
+    let sandbox_engine =
+        std::sync::Arc::new(wasmtime::Engine::new(&sandbox_config).expect("sandbox engine"));
     let sandbox_state = host::SandboxState {
         runtimes_dir: env_or("SANDBOX_RUNTIMES_DIR", "./runtimes"),
         allowed_languages: env_or("SANDBOX_ALLOWED_LANGUAGES", "python")
@@ -213,11 +213,11 @@ async fn main() -> anyhow::Result<()> {
                 .map(|s| s.trim().to_string())
                 .collect();
             if let Ok(mut p) = orch.policy.lock() {
-                let _ = p.update_data(
-                    "/config/allowed_domains",
-                    serde_json::json!(domains),
+                let _ = p.update_data("/config/allowed_domains", serde_json::json!(domains));
+                info!(
+                    count = domains.len(),
+                    "seeded allowed-fetch-domains from KV"
                 );
-                info!(count = domains.len(), "seeded allowed-fetch-domains from KV");
             }
         }
     }
@@ -238,18 +238,18 @@ async fn main() -> anyhow::Result<()> {
             while let Some(entry) = watcher.next().await {
                 match entry {
                     Ok(entry) => {
-                        let domains: Vec<String> =
-                            String::from_utf8_lossy(&entry.value)
-                                .split(',')
-                                .filter(|s| !s.trim().is_empty())
-                                .map(|s| s.trim().to_string())
-                                .collect();
+                        let domains: Vec<String> = String::from_utf8_lossy(&entry.value)
+                            .split(',')
+                            .filter(|s| !s.trim().is_empty())
+                            .map(|s| s.trim().to_string())
+                            .collect();
                         if let Ok(mut p) = policy.lock() {
-                            let _ = p.update_data(
-                                "/config/allowed_domains",
-                                serde_json::json!(domains),
+                            let _ = p
+                                .update_data("/config/allowed_domains", serde_json::json!(domains));
+                            info!(
+                                count = domains.len(),
+                                "allowed-fetch-domains updated from KV"
                             );
-                            info!(count = domains.len(), "allowed-fetch-domains updated from KV");
                         }
                     }
                     Err(e) => {
@@ -320,7 +320,11 @@ async fn main() -> anyhow::Result<()> {
         .trim_start_matches(':')
         .parse::<u16>()
         .map(|port| SocketAddr::from(([0, 0, 0, 0], port)))
-        .unwrap_or_else(|_| listen_addr.parse().unwrap_or(SocketAddr::from(([0, 0, 0, 0], 8080))));
+        .unwrap_or_else(|_| {
+            listen_addr
+                .parse()
+                .unwrap_or(SocketAddr::from(([0, 0, 0, 0], 8080)))
+        });
 
     info!(addr = %addr, "HTTP server listening");
 

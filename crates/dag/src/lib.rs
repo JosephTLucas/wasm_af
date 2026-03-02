@@ -110,19 +110,11 @@ impl Graph {
 
     /// Returns the direct dependents of a node.
     pub fn children(&self, id: &str) -> Vec<String> {
-        self.children
-            .get(id)
-            .cloned()
-            .unwrap_or_default()
+        self.children.get(id).cloned().unwrap_or_default()
     }
 
     /// Insert a new node between `after` and the dependents listed in `rewire`.
-    pub fn splice(
-        &mut self,
-        new_id: &str,
-        after: &str,
-        rewire: &[String],
-    ) -> Result<(), DagError> {
+    pub fn splice(&mut self, new_id: &str, after: &str, rewire: &[String]) -> Result<(), DagError> {
         if self.nodes.contains(new_id) {
             return Err(DagError::NodeExists(new_id.to_string()));
         }
@@ -207,7 +199,11 @@ impl Graph {
             *color.get_mut(id.as_str()).unwrap() = GRAY;
 
             while let Some(top) = stack.last_mut() {
-                let kids = self.children.get(top.0).map(|v| v.as_slice()).unwrap_or(&[]);
+                let kids = self
+                    .children
+                    .get(top.0)
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
                 if top.1 >= kids.len() {
                     let node = top.0;
                     *color.get_mut(node).unwrap() = BLACK;

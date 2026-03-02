@@ -24,8 +24,8 @@ struct ShellOutput {
 
 impl Guest for ShellAgent {
     fn execute(input: TaskInput) -> Result<TaskOutput, String> {
-        let req: ShellInput =
-            serde_json::from_str(&input.payload).map_err(|e| format!("payload parse error: {e}"))?;
+        let req: ShellInput = serde_json::from_str(&input.payload)
+            .map_err(|e| format!("payload parse error: {e}"))?;
 
         if req.command.is_empty() {
             return Err("command is required".to_string());

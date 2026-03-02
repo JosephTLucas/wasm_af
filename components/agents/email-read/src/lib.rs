@@ -35,10 +35,9 @@ impl Guest for EmailReadAgent {
         let req: EmailReadInput = serde_json::from_str(&input.payload)
             .map_err(|e| format!("payload parse error: {e}"))?;
 
-        let _api_key = get_config("email_api_key")
-            .ok_or_else(|| {
-                "email_api_key not in config — OPA policy did not inject it".to_string()
-            })?;
+        let _api_key = get_config("email_api_key").ok_or_else(|| {
+            "email_api_key not in config — OPA policy did not inject it".to_string()
+        })?;
 
         let folder = if req.folder.is_empty() {
             "inbox".to_string()

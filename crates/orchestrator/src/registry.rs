@@ -233,13 +233,17 @@ mod tests {
     #[test]
     fn register_and_get() {
         let reg = AgentRegistry::parse(minimal_registry_json().as_bytes()).unwrap();
-        reg.register("test-agent", AgentMeta {
-            wasm_name: "test".into(),
-            capability: "untrusted".into(),
-            context_key: "test_result".into(),
-            external: true,
-            ..Default::default()
-        }).unwrap();
+        reg.register(
+            "test-agent",
+            AgentMeta {
+                wasm_name: "test".into(),
+                capability: "untrusted".into(),
+                context_key: "test_result".into(),
+                external: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let meta = reg.get("test-agent").unwrap();
         assert!(meta.external);
     }
@@ -266,13 +270,17 @@ mod tests {
     #[test]
     fn is_platform_false_for_external() {
         let reg = AgentRegistry::parse(minimal_registry_json().as_bytes()).unwrap();
-        reg.register("ext", AgentMeta {
-            wasm_name: "ext".into(),
-            capability: "untrusted".into(),
-            context_key: "ext_result".into(),
-            external: true,
-            ..Default::default()
-        }).unwrap();
+        reg.register(
+            "ext",
+            AgentMeta {
+                wasm_name: "ext".into(),
+                capability: "untrusted".into(),
+                context_key: "ext_result".into(),
+                external: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(!reg.is_platform("ext"));
     }
 
@@ -301,9 +309,10 @@ mod tests {
             wasm_name: "shell".into(),
             capability: "shell".into(),
             context_key: "out".into(),
-            payload_fields: HashMap::from([
-                ("command".into(), serde_json::json!("step.params.command")),
-            ]),
+            payload_fields: HashMap::from([(
+                "command".into(),
+                serde_json::json!("step.params.command"),
+            )]),
             ..Default::default()
         };
         let payload = build_payload(&meta, &make_task_state(), &make_step());
@@ -317,9 +326,10 @@ mod tests {
             wasm_name: "r".into(),
             capability: "llm".into(),
             context_key: "out".into(),
-            payload_fields: HashMap::from([
-                ("message".into(), serde_json::json!("task.context.message")),
-            ]),
+            payload_fields: HashMap::from([(
+                "message".into(),
+                serde_json::json!("task.context.message"),
+            )]),
             ..Default::default()
         };
         let payload = build_payload(&meta, &make_task_state(), &make_step());
@@ -333,9 +343,7 @@ mod tests {
             wasm_name: "ws".into(),
             capability: "http".into(),
             context_key: "out".into(),
-            payload_fields: HashMap::from([
-                ("count".into(), serde_json::json!(5)),
-            ]),
+            payload_fields: HashMap::from([("count".into(), serde_json::json!(5))]),
             ..Default::default()
         };
         let payload = build_payload(&meta, &make_task_state(), &make_step());
@@ -383,7 +391,10 @@ mod tests {
 
     #[test]
     fn extract_domain_from_url() {
-        assert_eq!(extract_domain("https://api.brave.com/search"), "api.brave.com");
+        assert_eq!(
+            extract_domain("https://api.brave.com/search"),
+            "api.brave.com"
+        );
     }
 
     #[test]
