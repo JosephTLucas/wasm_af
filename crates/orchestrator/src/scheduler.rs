@@ -49,6 +49,32 @@ fn step_index(plan: &[Step], id: &str) -> Option<usize> {
     plan.iter().position(|s| s.id == id)
 }
 
+/// Partition plan steps into completed and non-dispatchable (failed/denied/awaiting) sets.
+fn plan_status_sets(plan: &[Step]) -> (HashSet<String>, HashSet<String>) {
+    let mut completed = HashSet::new();
+    let mut non_dispatchable = HashSet::new();
+    for s in plan {
+        match s.status {
+            StepStatus::Completed => {
+                completed.insert(s.id.clone());
+            }
+            StepStatus::Failed | StepStatus::Denied | StepStatus::AwaitingApproval => {
+                non_dispatchable.insert(s.id.clone());
+            }
+            _ => {}
+        }
+    }
+    (completed, non_dispatchable)
+}
+
+fn collapse_values(values: Vec<String>) -> String {
+    if values.len() == 1 {
+        values.into_iter().next().unwrap()
+    } else {
+        serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())
+    }
+}
+
 impl Orchestrator {
     pub async fn run_task(self: &Arc<Self>, task_id: String) {
         let log_id = task_id.clone();
@@ -102,19 +128,7 @@ impl Orchestrator {
                 }
             };
 
-            let mut completed = HashSet::new();
-            let mut non_dispatchable = HashSet::new();
-            for s in &state.plan {
-                match s.status {
-                    StepStatus::Completed => {
-                        completed.insert(s.id.clone());
-                    }
-                    StepStatus::Failed | StepStatus::Denied | StepStatus::AwaitingApproval => {
-                        non_dispatchable.insert(s.id.clone());
-                    }
-                    _ => {}
-                }
-            }
+            let (completed, non_dispatchable) = plan_status_sets(&state.plan);
 
             let ready_ids = g.ready(&completed);
             let dispatchable: Vec<String> = ready_ids
@@ -203,25 +217,7 @@ impl Orchestrator {
                 .any(|s| s.status == StepStatus::AwaitingApproval);
             if has_awaiting {
                 if let Ok(next_g) = build_dag(&state.plan) {
-                    let next_completed: HashSet<String> = state
-                        .plan
-                        .iter()
-                        .filter(|s| s.status == StepStatus::Completed)
-                        .map(|s| s.id.clone())
-                        .collect();
-                    let next_non: HashSet<String> = state
-                        .plan
-                        .iter()
-                        .filter(|s| {
-                            matches!(
-                                s.status,
-                                StepStatus::Failed
-                                    | StepStatus::Denied
-                                    | StepStatus::AwaitingApproval
-                            )
-                        })
-                        .map(|s| s.id.clone())
-                        .collect();
+                    let (next_completed, next_non) = plan_status_sets(&state.plan);
                     let next_ready = next_g.ready(&next_completed);
                     let can_dispatch = next_ready.iter().any(|id| !next_non.contains(id));
                     if !can_dispatch {
@@ -633,27 +629,16 @@ impl Orchestrator {
     fn collect_prior_results(&self, state: &TaskState, step_id: &str) -> HashMap<String, String> {
         self.collect_ancestor_outputs(state, step_id)
             .into_iter()
-            .map(|(key, values)| {
-                let val = if values.len() == 1 {
-                    values.into_iter().next().unwrap()
-                } else {
-                    serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())
-                };
-                (key, val)
-            })
+            .map(|(key, values)| (key, collapse_values(values)))
             .collect()
     }
 
     fn build_step_context(&self, state: &TaskState, step_id: &str) -> Vec<KvPair> {
         self.collect_ancestor_outputs(state, step_id)
             .into_iter()
-            .map(|(key, values)| {
-                let val = if values.len() == 1 {
-                    values.into_iter().next().unwrap()
-                } else {
-                    serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())
-                };
-                KvPair { key, val }
+            .map(|(key, values)| KvPair {
+                key,
+                val: collapse_values(values),
             })
             .collect()
     }

@@ -62,7 +62,6 @@ reply-all-demo: wasmclaw ## Run reply-all parallel DAG demo
 
 clean: ## Kill stale processes + clean build artifacts
 	@lsof -ti:8080 | xargs kill 2>/dev/null || true
-	@lsof -ti:8081 | xargs kill 2>/dev/null || true
 	cargo clean
 	@cd components && cargo clean
 

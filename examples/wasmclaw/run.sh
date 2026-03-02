@@ -119,15 +119,15 @@ submit_and_poll() {
     fi
 
     local poll_start=$SECONDS
-    printf "    ${DIM}⏱  Inference (%s) " "$LLM_LABEL"
+    printf "    ${DIM}⏱  Running (%s) " "$LLM_LABEL"
     local STATUS="" STATE="" i=0
     while [ $i -lt "$max_poll" ]; do
         STATE=$(curl -sf "http://localhost:8080/tasks/${TID}" || echo '{}')
         STATUS=$(echo "$STATE" | jq -r '.status // "unknown"')
         [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] && break
         printf "·"
-        sleep 2
-        i=$((i + 2))
+        sleep 1
+        i=$((i + 1))
     done
     local elapsed=$(( SECONDS - poll_start ))
     printf " %ds${RST}\n" "$elapsed"
@@ -167,15 +167,15 @@ submit_and_poll_quiet() {
     _LAST_TID="$TID"
 
     local poll_start=$SECONDS
-    printf "    ${DIM}⏱  Inference (%s) " "$LLM_LABEL"
+    printf "    ${DIM}⏱  Running (%s) " "$LLM_LABEL"
     local STATUS="" STATE="" i=0
     while [ $i -lt "$max_poll" ]; do
         STATE=$(curl -sf "http://localhost:8080/tasks/${TID}" || echo '{}')
         STATUS=$(echo "$STATE" | jq -r '.status // "unknown"')
         [ "$STATUS" = "completed" ] || [ "$STATUS" = "failed" ] && break
         printf "·"
-        sleep 2
-        i=$((i + 2))
+        sleep 1
+        i=$((i + 1))
     done
     local elapsed=$(( SECONDS - poll_start ))
     printf " %ds${RST}\n" "$elapsed"
@@ -270,15 +270,15 @@ JAILBREAK_TID=$(echo "$JAILBREAK_BODY" | jq -r '.task_id // ""')
 
 if [ -n "$JAILBREAK_TID" ] && [ "$JAILBREAK_TID" != "null" ]; then
     local_start=$SECONDS
-    printf "    ${DIM}⏱  Inference (%s) " "$LLM_LABEL"
+    printf "    ${DIM}⏱  Running (%s) " "$LLM_LABEL"
     JB_STATUS="" JB_STATE="" jb_i=0
     while [ $jb_i -lt 90 ]; do
         JB_STATE=$(curl -sf "http://localhost:8080/tasks/${JAILBREAK_TID}" || echo '{}')
         JB_STATUS=$(echo "$JB_STATE" | jq -r '.status // "unknown"')
         [ "$JB_STATUS" = "completed" ] || [ "$JB_STATUS" = "failed" ] && break
         printf "·"
-        sleep 2
-        jb_i=$((jb_i + 2))
+        sleep 1
+        jb_i=$((jb_i + 1))
     done
     local_elapsed=$(( SECONDS - local_start ))
     printf " %ds${RST}\n" "$local_elapsed"
@@ -364,8 +364,8 @@ else
                 APPR_STATUS=$(echo "$APPR_STATE" | jq -r '.status // "unknown"')
                 [ "$APPR_STATUS" = "completed" ] || [ "$APPR_STATUS" = "failed" ] && break
                 printf "·"
-                sleep 2
-                appr_j=$((appr_j + 2))
+                sleep 1
+                appr_j=$((appr_j + 1))
             done
             printf "${RST}\n"
 

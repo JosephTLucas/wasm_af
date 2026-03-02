@@ -7,6 +7,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::info;
 use wasm_af_taskstate::*;
 
@@ -425,6 +426,138 @@ pub async fn handle_healthz() -> StatusCode {
     StatusCode::OK
 }
 
+// ── Synchronous chat endpoint (/message) ────────────────────────────────────
+
+const INITIAL_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const MAX_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const MAX_POLL_DURATION: Duration = Duration::from_secs(30);
+
+#[derive(Deserialize)]
+pub struct MessageRequest {
+    pub message: String,
+    #[serde(default)]
+    pub user: String,
+}
+
+#[derive(Serialize)]
+pub struct MessageResponse {
+    pub response: String,
+    pub task_id: String,
+}
+
+pub async fn handle_message(
+    State(orch): State<AppState>,
+    Json(req): Json<MessageRequest>,
+) -> Result<Json<MessageResponse>, (StatusCode, String)> {
+    if req.message.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "message is required".to_string()));
+    }
+    let user = if req.user.is_empty() {
+        "anonymous".to_string()
+    } else {
+        req.user
+    };
+
+    info!(user = %user, message_len = req.message.len(), "chat message received");
+
+    let submit_req = SubmitTaskRequest {
+        task_type: "chat".to_string(),
+        query: req.message.clone(),
+        context: HashMap::from([
+            ("user".to_string(), user),
+            ("message".to_string(), req.message),
+        ]),
+    };
+
+    let (_, Json(submit_resp)) = handle_submit_task(State(orch.clone()), Json(submit_req)).await?;
+    let task_id = submit_resp.task_id;
+
+    let response = poll_for_response(&orch, &task_id).await?;
+
+    Ok(Json(MessageResponse {
+        response,
+        task_id,
+    }))
+}
+
+async fn poll_for_response(orch: &AppState, task_id: &str) -> Result<String, (StatusCode, String)> {
+    let deadline = tokio::time::Instant::now() + MAX_POLL_DURATION;
+    let mut interval = INITIAL_POLL_INTERVAL;
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        if tokio::time::Instant::now() >= deadline {
+            return Err((
+                StatusCode::GATEWAY_TIMEOUT,
+                "task did not complete in time".to_string(),
+            ));
+        }
+
+        let state = match orch.store.get(task_id).await {
+            Ok(s) => s,
+            Err(_) => {
+                interval = backoff(interval);
+                continue;
+            }
+        };
+
+        match state.status {
+            Status::Completed => return Ok(extract_response(&state)),
+            Status::Failed => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("task failed: {}", state.error),
+                ));
+            }
+            _ => {
+                interval = backoff(interval);
+            }
+        }
+    }
+}
+
+fn backoff(current: Duration) -> Duration {
+    let next = current * 2;
+    if next > MAX_POLL_INTERVAL {
+        MAX_POLL_INTERVAL
+    } else {
+        next
+    }
+}
+
+fn extract_response(state: &TaskState) -> String {
+    if let Some(rk) = state.context.get("result_key") {
+        if let Some(payload) = state.results.get(rk) {
+            return extract_payload_text(payload);
+        }
+    }
+
+    for step in &state.plan {
+        if step.agent_type != "responder" {
+            continue;
+        }
+        if let Some(payload) = state.results.get(&step.output_key) {
+            return extract_payload_text(payload);
+        }
+    }
+    "(no response)".to_string()
+}
+
+fn extract_payload_text(payload: &str) -> String {
+    #[derive(Deserialize)]
+    struct PayloadResponse {
+        #[serde(default)]
+        response: String,
+    }
+    if let Ok(parsed) = serde_json::from_str::<PayloadResponse>(payload) {
+        if !parsed.response.is_empty() {
+            return parsed.response;
+        }
+    }
+    payload.to_string()
+}
+
 fn build_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
     match req.task_type.as_str() {
         "chat" | "skill-demo" => build_chat_plan(req, task_id),
@@ -831,5 +964,129 @@ mod tests {
         let result = super::apply_reject(&mut state, "nonexistent", "bob", "reason");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not found"));
+    }
+
+    // ---- extract_payload_text ----
+
+    #[test]
+    fn extract_payload_text_valid_json() {
+        let payload = r#"{"response":"hello world"}"#;
+        assert_eq!(super::extract_payload_text(payload), "hello world");
+    }
+
+    #[test]
+    fn extract_payload_text_empty_response_returns_raw() {
+        let payload = r#"{"response":""}"#;
+        assert_eq!(super::extract_payload_text(payload), payload);
+    }
+
+    #[test]
+    fn extract_payload_text_plain_string() {
+        assert_eq!(super::extract_payload_text("just text"), "just text");
+    }
+
+    #[test]
+    fn extract_payload_text_invalid_json() {
+        assert_eq!(super::extract_payload_text("{broken"), "{broken");
+    }
+
+    #[test]
+    fn extract_payload_text_no_response_key() {
+        let payload = r#"{"other":"data"}"#;
+        assert_eq!(super::extract_payload_text(payload), payload);
+    }
+
+    // ---- extract_response ----
+
+    #[test]
+    fn extract_response_uses_result_key() {
+        let state = TaskState {
+            task_id: "t1".into(),
+            status: Status::Completed,
+            plan: vec![],
+            current_step: 0,
+            results: HashMap::from([(
+                "t1-step-2.output".to_string(),
+                r#"{"response":"from result_key"}"#.to_string(),
+            )]),
+            context: HashMap::from([("result_key".to_string(), "t1-step-2.output".to_string())]),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            error: String::new(),
+        };
+        assert_eq!(super::extract_response(&state), "from result_key");
+    }
+
+    #[test]
+    fn extract_response_falls_back_to_responder() {
+        let state = TaskState {
+            task_id: "t1".into(),
+            status: Status::Completed,
+            plan: vec![
+                Step {
+                    id: "t1-step-0".into(),
+                    agent_type: "memory".into(),
+                    output_key: "t1-step-0.output".into(),
+                    ..Default::default()
+                },
+                Step {
+                    id: "t1-step-2".into(),
+                    agent_type: "responder".into(),
+                    output_key: "t1-step-2.output".into(),
+                    ..Default::default()
+                },
+            ],
+            current_step: 0,
+            results: HashMap::from([(
+                "t1-step-2.output".to_string(),
+                r#"{"response":"from responder"}"#.to_string(),
+            )]),
+            context: HashMap::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            error: String::new(),
+        };
+        assert_eq!(super::extract_response(&state), "from responder");
+    }
+
+    #[test]
+    fn extract_response_no_match_returns_fallback() {
+        let state = TaskState {
+            task_id: "t1".into(),
+            status: Status::Completed,
+            plan: vec![Step {
+                agent_type: "memory".into(),
+                ..Default::default()
+            }],
+            current_step: 0,
+            results: HashMap::new(),
+            context: HashMap::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            error: String::new(),
+        };
+        assert_eq!(super::extract_response(&state), "(no response)");
+    }
+
+    // ---- backoff ----
+
+    #[test]
+    fn backoff_doubles() {
+        assert_eq!(
+            super::backoff(Duration::from_millis(250)),
+            Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn backoff_caps_at_max() {
+        assert_eq!(
+            super::backoff(Duration::from_secs(2)),
+            super::MAX_POLL_INTERVAL
+        );
+        assert_eq!(
+            super::backoff(Duration::from_secs(5)),
+            super::MAX_POLL_INTERVAL
+        );
     }
 }

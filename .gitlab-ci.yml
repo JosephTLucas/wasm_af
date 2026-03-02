@@ -5,20 +5,8 @@ stages:
 
 variables:
   CARGO_HOME: ${CI_PROJECT_DIR}/.cargo
-  GOPATH: ${CI_PROJECT_DIR}/.go
 
 # ── Lint ─────────────────────────────────────────────────────────────────────
-
-go-lint:
-  stage: lint
-  image: golang:1.23
-  script:
-    - cd cmd/webhook-gateway
-    - test -z "$(gofmt -l .)" || (echo "gofmt needed on:" && gofmt -l . && exit 1)
-    - go vet ./...
-    - go mod tidy
-    - git diff --exit-code go.mod || (echo "go.mod not tidy" && exit 1)
-    - if [ -f go.sum ]; then git diff --exit-code go.sum || (echo "go.sum not tidy" && exit 1); fi
 
 rust-lint:
   stage: lint
@@ -27,6 +15,8 @@ rust-lint:
     - rustup target add wasm32-wasip2
     - rustup component add clippy rustfmt
   script:
+    - cargo fmt --all --check
+    - cargo clippy --workspace -- -D warnings
     - cd components
     - cargo fmt --check
     - HOST_TARGET=$(rustc -vV | grep host | awk '{print $2}')
@@ -35,6 +25,7 @@ rust-lint:
     key: rust-${CI_COMMIT_REF_SLUG}
     paths:
       - .cargo/
+      - target/
       - components/target/
 
 opa-lint:
@@ -57,26 +48,20 @@ opa-lint:
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 
-go-test:
-  stage: test
-  image: golang:1.23
-  script:
-    - cd cmd/webhook-gateway
-    - go build ./...
-
 rust-test:
   stage: test
   image: rust:latest
   before_script:
     - rustup target add wasm32-wasip2
   script:
-    - cd components
+    - cargo test --workspace
     - HOST_TARGET=$(rustc -vV | grep host | awk '{print $2}')
-    - cargo test --target "$HOST_TARGET"
+    - cd components && cargo test --workspace --target "$HOST_TARGET"
   cache:
     key: rust-${CI_COMMIT_REF_SLUG}
     paths:
       - .cargo/
+      - target/
       - components/target/
 
 opa-test:
@@ -123,16 +108,4 @@ build-orchestrator:
   artifacts:
     paths:
       - bin/orchestrator
-    expire_in: 1 week
-
-build-webhook-gateway:
-  stage: build
-  image: golang:1.23
-  script:
-    - mkdir -p bin
-    - cd cmd/webhook-gateway
-    - go build -o ../../bin/webhook-gateway .
-  artifacts:
-    paths:
-      - bin/webhook-gateway
     expire_in: 1 week

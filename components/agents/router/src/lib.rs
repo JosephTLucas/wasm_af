@@ -73,6 +73,19 @@ User: "check my email" → {"skill":"email-read","params":{"folder":"inbox"}}
 User: "remember my name is Alice" → {"skill":"direct-answer","params":{}}
 "#;
 
+fn strip_llm_wrapper(raw: &str) -> &str {
+    let after_think = match raw.rfind("</think>") {
+        Some(idx) => raw[idx + "</think>".len()..].trim(),
+        None => raw,
+    };
+    after_think
+        .strip_prefix("```json")
+        .or_else(|| after_think.strip_prefix("```"))
+        .and_then(|s| s.strip_suffix("```"))
+        .map(|s| s.trim())
+        .unwrap_or(after_think)
+}
+
 struct RouterAgent;
 
 impl Guest for RouterAgent {
@@ -111,18 +124,7 @@ impl Guest for RouterAgent {
 
         let llm_resp = llm_complete(&llm_req).map_err(|e| format!("LLM error: {e}"))?;
 
-        let raw = llm_resp.content.trim();
-        let json_str = match raw.rfind("</think>") {
-            Some(idx) => raw[idx + "</think>".len()..].trim(),
-            None => raw,
-        };
-
-        let json_str = json_str
-            .strip_prefix("```json")
-            .or_else(|| json_str.strip_prefix("```"))
-            .and_then(|s| s.strip_suffix("```"))
-            .map(|s| s.trim())
-            .unwrap_or(json_str);
+        let json_str = strip_llm_wrapper(llm_resp.content.trim());
 
         let route: RouterOutput = serde_json::from_str(json_str).unwrap_or_else(|_| RouterOutput {
             skill: "direct-answer".to_string(),
@@ -140,3 +142,68 @@ impl Guest for RouterAgent {
 }
 
 export!(RouterAgent);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_plain_json() {
+        let input = r#"{"skill":"web-search","params":{"query":"test"}}"#;
+        assert_eq!(strip_llm_wrapper(input), input);
+    }
+
+    #[test]
+    fn strip_think_tags() {
+        let input = "<think>reasoning here</think>{\"skill\":\"shell\"}";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"shell\"}");
+    }
+
+    #[test]
+    fn strip_think_tags_with_whitespace() {
+        let input = "<think>reasoning\nmultiline</think>  \n  {\"skill\":\"shell\"}  ";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"shell\"}");
+    }
+
+    #[test]
+    fn strip_markdown_json_fences() {
+        let input = "```json\n{\"skill\":\"web-search\"}\n```";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"web-search\"}");
+    }
+
+    #[test]
+    fn strip_markdown_plain_fences() {
+        let input = "```\n{\"skill\":\"shell\"}\n```";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"shell\"}");
+    }
+
+    #[test]
+    fn strip_think_plus_fences() {
+        let input = "<think>some thought</think>\n```json\n{\"skill\":\"web-search\"}\n```";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"web-search\"}");
+    }
+
+    #[test]
+    fn strip_preserves_inner_content() {
+        let input = "```json\n{\"skill\":\"shell\",\"params\":{\"command\":\"echo ```\"}}\n```";
+        let result = strip_llm_wrapper(input);
+        assert!(result.contains("echo"));
+    }
+
+    #[test]
+    fn strip_no_fences_returns_original() {
+        let input = "just some text without any json";
+        assert_eq!(strip_llm_wrapper(input), input);
+    }
+
+    #[test]
+    fn strip_only_closing_think_takes_last() {
+        let input = "ignored prefix </think> {\"skill\":\"shell\"}";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"shell\"}");
+    }
+
+    #[test]
+    fn strip_empty_input() {
+        assert_eq!(strip_llm_wrapper(""), "");
+    }
+}

@@ -2,8 +2,8 @@
 # Shared infrastructure setup for wasmclaw demos.
 # Source this file; do not execute it directly.
 #
-# Provides: build, NATS, orchestrator, gateway startup with cleanup trap.
-# After sourcing, the orchestrator is running on :8080 and the gateway on :8081.
+# Provides: build, NATS, orchestrator startup with cleanup trap.
+# After sourcing, the orchestrator is running on :8080.
 # Exports: ROOT, EXAMPLE_DIR, LLM_MODE, LLM_LABEL, ANSI color vars, box(), die(),
 #          _lifecycle_lines(), cleanup trap.
 
@@ -48,7 +48,6 @@ die() { echo "  ${BRED}ERROR:${RST} $1" >&2; exit 1; }
 
 EXAMPLE_DIR="$ROOT/examples/wasmclaw"
 ORCH_PID=""
-GW_PID=""
 NATS_PID=""
 NATS_STARTED_BY_US=""
 NATS_STORE_DIR=""
@@ -56,7 +55,6 @@ OLLAMA_PID=""
 OLLAMA_STARTED_BY_US=""
 
 cleanup() {
-    [ -n "$GW_PID" ]   && kill "$GW_PID"   2>/dev/null || true
     [ -n "$ORCH_PID" ] && kill "$ORCH_PID" 2>/dev/null || true
     [ -n "$OLLAMA_STARTED_BY_US" ] && [ -n "$OLLAMA_PID" ] && \
         kill "$OLLAMA_PID" 2>/dev/null || true
@@ -118,12 +116,6 @@ if [ ! -f "$RUNTIMES_DIR/python.wasm" ]; then
     echo "        Downloading sandbox runtimes..."
     bash "$RUNTIMES_DIR/build.sh" 2>&1 | sed 's/^/        /' || \
         echo "        (sandbox runtime download failed — sandbox-exec will be disabled)"
-fi
-
-if [ -d "$ROOT/cmd/webhook-gateway" ] && [ -f "$ROOT/go.mod" ] && command -v go >/dev/null 2>&1; then
-    echo "        Building Go webhook-gateway..."
-    go build -o ./bin/webhook-gateway ./cmd/webhook-gateway/ 2>&1 || \
-        echo "        (webhook-gateway build skipped)"
 fi
 
 echo "        ${GRN}Done.${RST}"
@@ -235,24 +227,4 @@ if ! curl -sf http://localhost:8080/healthz >/dev/null 2>&1; then
     die "Orchestrator failed to start."
 fi
 echo "        ${GRN}Orchestrator running${RST} ${DIM}(LLM: $LLM_LABEL)${RST}"
-
-if [ -x ./bin/webhook-gateway ]; then
-    if lsof -ti:8081 >/dev/null 2>&1; then
-        echo "        Stopping stale process on :8081..."
-        lsof -ti:8081 | xargs kill 2>/dev/null || true
-        sleep 1
-    fi
-
-    ORCHESTRATOR_URL=http://localhost:8080 \
-    LISTEN_ADDR=:8081 \
-        ./bin/webhook-gateway > /tmp/wasm-af-gateway.log 2>&1 &
-    GW_PID=$!
-    sleep 1
-
-    if ! curl -sf http://localhost:8081/healthz >/dev/null 2>&1; then
-        cat /tmp/wasm-af-gateway.log
-        die "Webhook gateway failed to start."
-    fi
-    echo "        ${GRN}Webhook gateway running${RST} ${DIM}(PID $GW_PID)${RST}"
-fi
 echo ""

@@ -28,6 +28,20 @@ fn env_or_u64(key: &str, fallback: u64) -> u64 {
         .unwrap_or(fallback)
 }
 
+fn parse_comma_vec(s: &str) -> Vec<String> {
+    s.split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| s.trim().to_string())
+        .collect()
+}
+
+fn parse_comma_set(s: &str) -> HashMap<String, bool> {
+    parse_comma_vec(s)
+        .into_iter()
+        .map(|s| (s, true))
+        .collect()
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -120,19 +134,11 @@ async fn main() -> anyhow::Result<()> {
     info!(mode = %llm_state.mode, model = %llm_state.model, "LLM configured");
 
     // Shell config
-    let shell_allowed_cmds: HashMap<String, bool> = env_or(
+    let shell_allowed_cmds = parse_comma_set(&env_or(
         "SHELL_ALLOWED_COMMANDS",
         "ls,cat,pwd,echo,find,date,uname,wc,head,tail",
-    )
-    .split(',')
-    .filter(|s| !s.trim().is_empty())
-    .map(|s| (s.trim().to_string(), true))
-    .collect();
-    let shell_allowed_paths: Vec<String> = env_or("SHELL_ALLOWED_PATHS", "/tmp/wasmclaw")
-        .split(',')
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.trim().to_string())
-        .collect();
+    ));
+    let shell_allowed_paths = parse_comma_vec(&env_or("SHELL_ALLOWED_PATHS", "/tmp/wasmclaw"));
     let shell_work_dir = shell_allowed_paths
         .first()
         .cloned()
@@ -152,15 +158,10 @@ async fn main() -> anyhow::Result<()> {
         std::sync::Arc::new(wasmtime::Engine::new(&sandbox_config).expect("sandbox engine"));
     let sandbox_state = host::SandboxState {
         runtimes_dir: env_or("SANDBOX_RUNTIMES_DIR", "./runtimes"),
-        allowed_languages: env_or("SANDBOX_ALLOWED_LANGUAGES", "python")
-            .split(',')
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| (s.trim().to_string(), true))
-            .collect(),
-        allowed_paths: env_or("SANDBOX_ALLOWED_PATHS", "/tmp/wasmclaw")
-            .split(',')
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| (s.trim().to_string(), s.trim().to_string()))
+        allowed_languages: parse_comma_set(&env_or("SANDBOX_ALLOWED_LANGUAGES", "python")),
+        allowed_paths: parse_comma_vec(&env_or("SANDBOX_ALLOWED_PATHS", "/tmp/wasmclaw"))
+            .into_iter()
+            .map(|s| (s.clone(), s))
             .collect(),
         timeout_secs: env_or_u64("SANDBOX_TIMEOUT_SEC", 30),
         engine: sandbox_engine,
@@ -178,11 +179,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Email config
     let email_state = host::EmailState {
-        allowed_domains: env_or("EMAIL_ALLOWED_DOMAINS", "example.com,partner-corp.com")
-            .split(',')
-            .filter(|s| !s.trim().is_empty())
-            .map(|s| (s.trim().to_lowercase(), true))
-            .collect(),
+        allowed_domains: parse_comma_vec(&env_or(
+            "EMAIL_ALLOWED_DOMAINS",
+            "example.com,partner-corp.com",
+        ))
+        .into_iter()
+        .map(|s| (s.to_lowercase(), true))
+        .collect(),
     };
 
     let orch = Arc::new(Orchestrator {
@@ -208,11 +211,7 @@ async fn main() -> anyhow::Result<()> {
     // Seed allowed-fetch-domains from NATS KV into OPA data store.
     if let Ok(entry) = orch.config_kv.entry("allowed-fetch-domains").await {
         if let Some(entry) = entry {
-            let domains: Vec<String> = String::from_utf8_lossy(&entry.value)
-                .split(',')
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| s.trim().to_string())
-                .collect();
+            let domains = parse_comma_vec(&String::from_utf8_lossy(&entry.value));
             if let Ok(mut p) = orch.policy.lock() {
                 let _ = p.update_data("/config/allowed_domains", serde_json::json!(domains));
                 info!(
@@ -239,11 +238,7 @@ async fn main() -> anyhow::Result<()> {
             while let Some(entry) = watcher.next().await {
                 match entry {
                     Ok(entry) => {
-                        let domains: Vec<String> = String::from_utf8_lossy(&entry.value)
-                            .split(',')
-                            .filter(|s| !s.trim().is_empty())
-                            .map(|s| s.trim().to_string())
-                            .collect();
+                        let domains = parse_comma_vec(&String::from_utf8_lossy(&entry.value));
                         if let Ok(mut p) = policy.lock() {
                             let _ = p
                                 .update_data("/config/allowed_domains", serde_json::json!(domains));
@@ -311,6 +306,7 @@ async fn main() -> anyhow::Result<()> {
             "/tasks/{id}/steps/{stepId}/reject",
             post(api::handle_reject_step),
         )
+        .route("/message", post(api::handle_message))
         .route("/agents", post(api::handle_register_agent))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .route("/agents", get(api::handle_list_agents))

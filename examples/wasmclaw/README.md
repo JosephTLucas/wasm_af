@@ -10,7 +10,7 @@ LLM_MODE=real make demo                # local Ollama
 
 For API inference, set `NV_API_KEY` in `.env` at the repo root. Default model: `nvdev/nvidia/llama-3.3-nemotron-super-49b-v1` (override with `NV_MODEL`).
 
-Prerequisites: Rust (wasm32-wasip2 target), jq, `nats-server`. Optional: `opa`, `wasm-tools`, Go (for webhook-gateway).
+Prerequisites: Rust (wasm32-wasip2 target), jq, `nats-server`. Optional: `opa`, `wasm-tools`.
 
 ---
 
@@ -96,7 +96,7 @@ make reply-all-demo           # standalone demo with interactive Y/n approval
 ```
 POST /message { message: "calculate fibonacci of 10" }
   │
-  ├── webhook-gateway → POST /tasks { type: "chat", query: "..." }
+  ├── orchestrator → submit task { type: "chat", query: "..." }
   ├── submit.rego: allow (task_type == "chat")
   │
   ├── ChatBuilder → plan (DAG):

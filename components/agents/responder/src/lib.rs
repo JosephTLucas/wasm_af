@@ -114,3 +114,98 @@ impl Guest for ResponderAgent {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inbox_json(emails: &[serde_json::Value]) -> String {
+        serde_json::json!({
+            "emails": emails,
+            "count": emails.len(),
+        })
+        .to_string()
+    }
+
+    fn sample_email(from: &str, subject: &str) -> serde_json::Value {
+        serde_json::json!({
+            "from": from,
+            "subject": subject,
+            "body": format!("body from {from}"),
+        })
+    }
+
+    #[test]
+    fn scope_email_context_picks_single_email() {
+        let raw = inbox_json(&[
+            sample_email("alice@a.com", "Hello"),
+            sample_email("bob@b.com", "Meeting"),
+            sample_email("carol@c.com", "Update"),
+        ]);
+        let scoped = scope_email_context(&raw, 1).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&scoped).unwrap();
+        assert_eq!(v["count"], 1);
+        let emails = v["emails"].as_array().unwrap();
+        assert_eq!(emails.len(), 1);
+        assert_eq!(emails[0]["from"], "bob@b.com");
+    }
+
+    #[test]
+    fn scope_email_context_first_index() {
+        let raw = inbox_json(&[sample_email("a@a.com", "A"), sample_email("b@b.com", "B")]);
+        let scoped = scope_email_context(&raw, 0).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&scoped).unwrap();
+        assert_eq!(v["emails"].as_array().unwrap()[0]["from"], "a@a.com");
+    }
+
+    #[test]
+    fn scope_email_context_last_index() {
+        let raw = inbox_json(&[sample_email("a@a.com", "A"), sample_email("b@b.com", "B")]);
+        let scoped = scope_email_context(&raw, 1).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&scoped).unwrap();
+        assert_eq!(v["emails"].as_array().unwrap()[0]["from"], "b@b.com");
+    }
+
+    #[test]
+    fn scope_email_context_out_of_range() {
+        let raw = inbox_json(&[sample_email("a@a.com", "A")]);
+        assert!(scope_email_context(&raw, 5).is_none());
+    }
+
+    #[test]
+    fn scope_email_context_invalid_json() {
+        assert!(scope_email_context("not json", 0).is_none());
+    }
+
+    #[test]
+    fn scope_email_context_missing_emails_key() {
+        let raw = r#"{"other": "data"}"#;
+        assert!(scope_email_context(raw, 0).is_none());
+    }
+
+    #[test]
+    fn scope_email_context_emails_not_array() {
+        let raw = r#"{"emails": "not-an-array", "count": 0}"#;
+        assert!(scope_email_context(raw, 0).is_none());
+    }
+
+    #[test]
+    fn scope_email_context_empty_array() {
+        let raw = inbox_json(&[]);
+        assert!(scope_email_context(&raw, 0).is_none());
+    }
+
+    #[test]
+    fn scope_email_context_preserves_extra_fields() {
+        let raw = serde_json::json!({
+            "emails": [{"from": "a@a.com", "subject": "hi", "body": "yo"}],
+            "count": 1,
+            "folder": "inbox",
+        })
+        .to_string();
+        let scoped = scope_email_context(&raw, 0).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&scoped).unwrap();
+        assert_eq!(v["folder"], "inbox");
+        assert_eq!(v["count"], 1);
+    }
+}

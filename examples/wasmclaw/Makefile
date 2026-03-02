@@ -33,10 +33,6 @@ build: ## Build WASM agent components + Rust orchestrator
 	@echo "Building Rust orchestrator..."
 	@cd $(ROOT) && cargo build --release -p wasm-af-orchestrator 2>&1
 	@cp $(ROOT)/target/release/orchestrator $(ROOT)/bin/orchestrator
-	@if [ -d "$(ROOT)/cmd/webhook-gateway" ] && [ -f "$(ROOT)/go.mod" ] && command -v go >/dev/null 2>&1; then \
-		echo "Building Go webhook-gateway..."; \
-		cd $(ROOT) && go build -o $(ROOT)/bin/webhook-gateway ./cmd/webhook-gateway/ 2>&1; \
-	fi
 
 ##@ Test
 
@@ -49,7 +45,6 @@ test-policy: ## Run OPA unit tests for policy.rego and submit.rego (no services 
 
 clean: ## Kill any stale processes left from a previous interrupted run
 	@lsof -ti:8080 | xargs kill 2>/dev/null || true
-	@lsof -ti:8081 | xargs kill 2>/dev/null || true
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} \

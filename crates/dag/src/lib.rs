@@ -328,4 +328,138 @@ mod tests {
         let err = Graph::new(&ids(&["a", "a"]), &HashMap::new());
         assert!(err.is_err());
     }
+
+    #[test]
+    fn ready_all_independent() {
+        let g = Graph::new(&ids(&["a", "b", "c"]), &HashMap::new()).unwrap();
+        let mut ready = g.ready(&HashSet::new());
+        ready.sort();
+        assert_eq!(ready, ids(&["a", "b", "c"]));
+    }
+
+    #[test]
+    fn ready_diamond_join() {
+        // a -> b, a -> c, b -> d, c -> d  (d waits for both b and c)
+        let deps = HashMap::from([
+            ("b".to_string(), vec!["a".to_string()]),
+            ("c".to_string(), vec!["a".to_string()]),
+            ("d".to_string(), vec!["b".to_string(), "c".to_string()]),
+        ]);
+        let g = Graph::new(&ids(&["a", "b", "c", "d"]), &deps).unwrap();
+
+        let done: HashSet<String> = ["a".into(), "b".into()].into();
+        let ready = g.ready(&done);
+        assert_eq!(ready, vec!["c".to_string()], "d should not be ready until both b and c complete");
+
+        let done: HashSet<String> = ["a".into(), "b".into(), "c".into()].into();
+        let ready = g.ready(&done);
+        assert_eq!(ready, vec!["d".to_string()]);
+    }
+
+    #[test]
+    fn ready_returns_empty_when_all_completed() {
+        let deps = HashMap::from([("b".to_string(), vec!["a".to_string()])]);
+        let g = Graph::new(&ids(&["a", "b"]), &deps).unwrap();
+        let done: HashSet<String> = ["a".into(), "b".into()].into();
+        assert!(g.ready(&done).is_empty());
+    }
+
+    #[test]
+    fn children_returns_direct_dependents() {
+        let deps = HashMap::from([
+            ("b".to_string(), vec!["a".to_string()]),
+            ("c".to_string(), vec!["a".to_string()]),
+        ]);
+        let g = Graph::new(&ids(&["a", "b", "c"]), &deps).unwrap();
+        let mut kids = g.children("a");
+        kids.sort();
+        assert_eq!(kids, ids(&["b", "c"]));
+    }
+
+    #[test]
+    fn children_leaf_returns_empty() {
+        let deps = HashMap::from([("b".to_string(), vec!["a".to_string()])]);
+        let g = Graph::new(&ids(&["a", "b"]), &deps).unwrap();
+        assert!(g.children("b").is_empty());
+    }
+
+    #[test]
+    fn children_unknown_returns_empty() {
+        let g = Graph::new(&ids(&["a"]), &HashMap::new()).unwrap();
+        assert!(g.children("nonexistent").is_empty());
+    }
+
+    #[test]
+    fn ancestors_diamond() {
+        let deps = HashMap::from([
+            ("b".to_string(), vec!["a".to_string()]),
+            ("c".to_string(), vec!["a".to_string()]),
+            ("d".to_string(), vec!["b".to_string(), "c".to_string()]),
+        ]);
+        let g = Graph::new(&ids(&["a", "b", "c", "d"]), &deps).unwrap();
+        let mut anc = g.ancestors("d");
+        anc.sort();
+        assert_eq!(anc, ids(&["a", "b", "c"]));
+    }
+
+    #[test]
+    fn ancestors_root_has_none() {
+        let deps = HashMap::from([("b".to_string(), vec!["a".to_string()])]);
+        let g = Graph::new(&ids(&["a", "b"]), &deps).unwrap();
+        assert!(g.ancestors("a").is_empty());
+    }
+
+    #[test]
+    fn new_rejects_unknown_parent() {
+        let deps = HashMap::from([("a".to_string(), vec!["ghost".to_string()])]);
+        let err = Graph::new(&ids(&["a"]), &deps).unwrap_err();
+        assert!(matches!(err, DagError::UnknownParent(..)));
+    }
+
+    #[test]
+    fn new_rejects_dep_key_not_in_nodes() {
+        let deps = HashMap::from([("ghost".to_string(), vec!["a".to_string()])]);
+        let err = Graph::new(&ids(&["a"]), &deps).unwrap_err();
+        assert!(matches!(err, DagError::UnknownDep(..)));
+    }
+
+    #[test]
+    fn splice_rejects_duplicate_new_id() {
+        let deps = HashMap::from([("b".to_string(), vec!["a".to_string()])]);
+        let mut g = Graph::new(&ids(&["a", "b"]), &deps).unwrap();
+        let err = g.splice("a", "a", &["b".into()]).unwrap_err();
+        assert!(matches!(err, DagError::NodeExists(..)));
+    }
+
+    #[test]
+    fn splice_rejects_missing_after() {
+        let mut g = Graph::new(&ids(&["a"]), &HashMap::new()).unwrap();
+        let err = g.splice("x", "ghost", &[]).unwrap_err();
+        assert!(matches!(err, DagError::AfterMissing(..)));
+    }
+
+    #[test]
+    fn splice_rejects_non_child_in_rewire() {
+        let deps = HashMap::from([("b".to_string(), vec!["a".to_string()])]);
+        let mut g = Graph::new(&ids(&["a", "b", "c"]), &deps).unwrap();
+        let err = g.splice("x", "a", &["c".into()]).unwrap_err();
+        assert!(matches!(err, DagError::NotAChild(..)));
+    }
+
+    #[test]
+    fn three_node_cycle_detected() {
+        let deps = HashMap::from([
+            ("a".to_string(), vec!["c".to_string()]),
+            ("b".to_string(), vec!["a".to_string()]),
+            ("c".to_string(), vec!["b".to_string()]),
+        ]);
+        let err = Graph::new(&ids(&["a", "b", "c"]), &deps).unwrap_err();
+        assert!(matches!(err, DagError::Cycle(..)));
+    }
+
+    #[test]
+    fn empty_graph() {
+        let g = Graph::new(&[], &HashMap::new()).unwrap();
+        assert!(g.ready(&HashSet::new()).is_empty());
+    }
 }

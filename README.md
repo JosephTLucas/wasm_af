@@ -31,12 +31,6 @@ Most agent frameworks enforce security through **convention**: configure your to
 ## Architecture
 
 ```
-                 ┌──────────────────────────┐
-                 │    Webhook Gateway       │   cmd/webhook-gateway
-                 │    POST /message :8081   │   (chat entry point)
-                 └────────────┬─────────────┘
-                              │  POST /tasks
-                              ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              Rust Orchestrator Binary (axum)                │
 │                                                             │
@@ -126,6 +120,7 @@ approval_reason := "email delivery requires human approval" if { input.step.agen
 
 | Method | Path | Description |
 |---|---|---|
+| `POST` | `/message` | Synchronous chat endpoint (submit + poll + return response) |
 | `POST` | `/tasks` | Submit a new task (returns `task_id`) |
 | `GET` | `/tasks/{id}` | Get task state (plan, step statuses, results) |
 
@@ -179,7 +174,7 @@ wasm_af/
 │   │   │   ├── policy.rs           # OPA evaluator (regorus, evaluates Rego per step)
 │   │   │   ├── scheduler.rs        # DAG scheduler, parallel dispatch, splice
 │   │   │   ├── registry.rs         # agent registry (thread-safe, mutable at runtime)
-│   │   │   └── api.rs              # HTTP handlers (submit, get, approve, reject, BYOA)
+│   │   │   └── api.rs              # HTTP handlers (message, submit, get, approve, reject, BYOA)
 │   │   └── Cargo.toml
 │   │
 │   ├── dag/                        # DAG: dependency graph, ready-set, ancestors, splice
@@ -187,8 +182,6 @@ wasm_af/
 │   │
 │   └── taskstate/                  # NATS JetStream KV: task state, audit log, payloads
 │       └── src/lib.rs
-│
-├── cmd/webhook-gateway/            # lightweight HTTP gateway (Go, chat → task → poll)
 │
 ├── policies/                       # reusable OPA policy modules
 │   └── byoa.rego                   # untrusted-agent sandbox tier
@@ -287,13 +280,6 @@ cd examples/prompt-injection && make demo    # requires Ollama (pulls model auto
 | `EMAIL_ALLOWED_DOMAINS` | `example.com,partner-corp.com` | Comma-separated recipient domain allowlist |
 | `APPROVAL_WEBHOOK_URL` | — | URL to POST approval events |
 | `APPROVAL_TIMEOUT_SEC` | `0` | Auto-reject steps after N seconds (0 = no timeout) |
-
-### Webhook Gateway (`cmd/webhook-gateway/`)
-
-| Variable | Default | Description |
-|---|---|---|
-| `LISTEN_ADDR` | `:8081` | Gateway HTTP server address |
-| `ORCHESTRATOR_URL` | `http://localhost:8080` | Orchestrator API base URL |
 
 ### NVIDIA NIM API
 

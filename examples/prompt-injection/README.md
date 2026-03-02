@@ -7,7 +7,7 @@ make demo                        # requires Ollama (pulls gemma3:270m automatica
 MODEL=llama3.2:3b make demo      # custom model
 ```
 
-Prerequisites: Rust, jq, nats-server, [Ollama](https://ollama.com). Optional: Go (for webhook-gateway).
+Prerequisites: Rust, jq, nats-server, [Ollama](https://ollama.com).
 
 ---
 

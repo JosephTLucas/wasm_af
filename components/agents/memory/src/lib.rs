@@ -24,6 +24,13 @@ struct MemoryOutput {
 
 const CONTEXT_KEY_RESPONSE: &str = "response";
 
+fn merge_append(existing: Option<&str>, new_val: &str) -> String {
+    match existing {
+        Some(val) if !val.is_empty() => format!("{val}\n{new_val}"),
+        _ => new_val.to_string(),
+    }
+}
+
 struct MemoryAgent;
 
 impl Guest for MemoryAgent {
@@ -79,10 +86,7 @@ impl Guest for MemoryAgent {
                     }
                 } else {
                     let existing = kv_get(&req.key)?;
-                    let new_value = match existing {
-                        Some(val) if !val.is_empty() => format!("{val}\n{append_value}"),
-                        _ => append_value,
-                    };
+                    let new_value = merge_append(existing.as_deref(), &append_value);
                     kv_put(&req.key, &new_value)?;
                     MemoryOutput {
                         value: String::new(),
@@ -109,3 +113,36 @@ impl Guest for MemoryAgent {
 }
 
 export!(MemoryAgent);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_append_no_existing() {
+        assert_eq!(merge_append(None, "hello"), "hello");
+    }
+
+    #[test]
+    fn merge_append_empty_existing() {
+        assert_eq!(merge_append(Some(""), "hello"), "hello");
+    }
+
+    #[test]
+    fn merge_append_with_existing() {
+        assert_eq!(merge_append(Some("line1"), "line2"), "line1\nline2");
+    }
+
+    #[test]
+    fn merge_append_multiple() {
+        let first = merge_append(None, "a");
+        let second = merge_append(Some(&first), "b");
+        let third = merge_append(Some(&second), "c");
+        assert_eq!(third, "a\nb\nc");
+    }
+
+    #[test]
+    fn merge_append_preserves_whitespace_in_values() {
+        assert_eq!(merge_append(Some("  spaced  "), "  also  "), "  spaced  \n  also  ");
+    }
+}
