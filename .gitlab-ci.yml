@@ -9,20 +9,24 @@ variables:
 
 # ── Lint ─────────────────────────────────────────────────────────────────────
 
-go-vet:
+go-lint:
   stage: lint
   image: golang:1.25
   script:
+    - test -z "$(gofmt -l .)" || (echo "gofmt needed on:" && gofmt -l . && exit 1)
     - go vet ./...
+    - go mod tidy
+    - git diff --exit-code go.mod go.sum || (echo "go.mod/go.sum not tidy" && exit 1)
 
-rust-clippy:
+rust-lint:
   stage: lint
   image: rust:latest
   before_script:
     - rustup target add wasm32-unknown-unknown wasm32-wasip1
-    - rustup component add clippy
+    - rustup component add clippy rustfmt
   script:
     - cd components
+    - cargo fmt --check
     - HOST_TARGET=$(rustc -vV | grep host | awk '{print $2}')
     - cargo clippy --target "$HOST_TARGET" -- -D warnings
   cache:
@@ -31,13 +35,31 @@ rust-clippy:
       - .cargo/
       - components/target/
 
+opa-lint:
+  stage: lint
+  image:
+    name: openpolicyagent/opa:latest
+    entrypoint: [""]
+  script:
+    - |
+      BAD=""
+      for f in $(find . -name '*.rego'); do
+        if ! opa fmt --fail "$f"; then
+          BAD="$BAD $f"
+        fi
+      done
+      if [ -n "$BAD" ]; then
+        echo "opa fmt needed on:$BAD"
+        exit 1
+      fi
+
 # ── Test ─────────────────────────────────────────────────────────────────────
 
 go-test:
   stage: test
   image: golang:1.25
   script:
-    - go test ./provider/orchestrator/ ./pkg/...
+    - go test -race ./provider/orchestrator/ ./pkg/...
 
 rust-test:
   stage: test

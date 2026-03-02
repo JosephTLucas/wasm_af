@@ -296,4 +296,3 @@ func (o *Orchestrator) handleListApprovals(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(pending)
 }
-

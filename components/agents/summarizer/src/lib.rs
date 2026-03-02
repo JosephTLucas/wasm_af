@@ -88,10 +88,7 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
         }));
     }
 
-    let query_label = req
-        .query
-        .as_deref()
-        .unwrap_or(search.query.as_str());
+    let query_label = req.query.as_deref().unwrap_or(search.query.as_str());
 
     let source_count = search.results.len();
     let sources_text = search
@@ -137,8 +134,7 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
     };
 
     let Json(llm_resp) = unsafe {
-        llm_complete(Json(llm_req))
-            .map_err(|e| Error::msg(format!("LLM inference error: {e}")))?
+        llm_complete(Json(llm_req)).map_err(|e| Error::msg(format!("LLM inference error: {e}")))?
     };
 
     let output = SummaryOutput {

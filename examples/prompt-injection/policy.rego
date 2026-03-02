@@ -19,8 +19,8 @@ allow if {
 	input.agent.capability == "llm"
 }
 
-max_memory_pages := 64 if { input.step.agent_type == "url-fetch" }
-max_memory_pages := 256 if { input.step.agent_type == "summarizer" }
+max_memory_pages := 64 if input.step.agent_type == "url-fetch"
+max_memory_pages := 256 if input.step.agent_type == "summarizer"
 
 allowed_hosts := [input.step.params.restricted_to] if {
 	input.step.agent_type == "url-fetch"

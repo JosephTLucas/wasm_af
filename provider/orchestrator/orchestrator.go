@@ -40,10 +40,10 @@ type Orchestrator struct {
 	pluginMaxMemoryPages uint32
 	pluginMaxHTTPBytes   int64
 
-	natsConn            *nats.Conn
-	configKV            natsjetstream.KeyValue
-	approvalWebhookURL  string
-	approvalTimeoutSec  int
+	natsConn           *nats.Conn
+	configKV           natsjetstream.KeyValue
+	approvalWebhookURL string
+	approvalTimeoutSec int
 
 	// runningTasks tracks task IDs with an active runTask goroutine to
 	// prevent overlapping executions from approval/rejection/timeout handlers.

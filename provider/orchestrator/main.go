@@ -48,7 +48,7 @@ func run(logger *slog.Logger) error {
 	opaDataPath := os.Getenv("OPA_DATA")
 
 	pluginTimeoutSec := envOrInt("PLUGIN_TIMEOUT_SEC", 30)
-	pluginMaxMemPages := envOrInt("PLUGIN_MAX_MEMORY_PAGES", 256) // 256 pages = 16 MiB
+	pluginMaxMemPages := envOrInt("PLUGIN_MAX_MEMORY_PAGES", 256)    // 256 pages = 16 MiB
 	pluginMaxHTTPBytes := envOrInt64("PLUGIN_MAX_HTTP_BYTES", 4<<20) // 4 MiB
 
 	agentRegistryJSON := os.Getenv("AGENT_REGISTRY")

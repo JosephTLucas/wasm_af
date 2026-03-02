@@ -18,10 +18,10 @@ const (
 type StepStatus string
 
 const (
-	StepPending   StepStatus = "pending"
-	StepRunning   StepStatus = "running"
-	StepCompleted StepStatus = "completed"
-	StepFailed    StepStatus = "failed"
+	StepPending          StepStatus = "pending"
+	StepRunning          StepStatus = "running"
+	StepCompleted        StepStatus = "completed"
+	StepFailed           StepStatus = "failed"
 	StepDenied           StepStatus = "denied"            // policy evaluation denied the link
 	StepAwaitingApproval StepStatus = "awaiting_approval" // paused pending human approval
 )
@@ -29,9 +29,9 @@ const (
 // Step is one unit of work within a task plan.
 type Step struct {
 	ID          string     `json:"id"`
-	AgentType   string     `json:"agent_type"`   // e.g. "web-search", "summarizer", "url-fetch"
-	InputKey    string     `json:"input_key"`    // KV key holding this step's input payload
-	OutputKey   string     `json:"output_key"`   // KV key where result will be written
+	AgentType   string     `json:"agent_type"` // e.g. "web-search", "summarizer", "url-fetch"
+	InputKey    string     `json:"input_key"`  // KV key holding this step's input payload
+	OutputKey   string     `json:"output_key"` // KV key where result will be written
 	Status      StepStatus `json:"status"`
 	Error       string     `json:"error,omitempty"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
@@ -92,17 +92,17 @@ type AuditEvent struct {
 type EventType string
 
 const (
-	EventTaskCreated    EventType = "task.created"
-	EventTaskCompleted  EventType = "task.completed"
-	EventTaskFailed     EventType = "task.failed"
-	EventStepStarted    EventType = "step.started"
-	EventStepCompleted  EventType = "step.completed"
-	EventStepFailed     EventType = "step.failed"
-	EventPolicyPermit   EventType = "policy.permit"
-	EventPolicyDeny     EventType = "policy.deny"
-	EventComponentStart        EventType = "component.start"
-	EventComponentStop         EventType = "component.stop"
-	EventStepAwaitingApproval  EventType = "step.awaiting_approval"
-	EventStepApproved          EventType = "step.approved"
-	EventStepRejected          EventType = "step.rejected"
+	EventTaskCreated          EventType = "task.created"
+	EventTaskCompleted        EventType = "task.completed"
+	EventTaskFailed           EventType = "task.failed"
+	EventStepStarted          EventType = "step.started"
+	EventStepCompleted        EventType = "step.completed"
+	EventStepFailed           EventType = "step.failed"
+	EventPolicyPermit         EventType = "policy.permit"
+	EventPolicyDeny           EventType = "policy.deny"
+	EventComponentStart       EventType = "component.start"
+	EventComponentStop        EventType = "component.stop"
+	EventStepAwaitingApproval EventType = "step.awaiting_approval"
+	EventStepApproved         EventType = "step.approved"
+	EventStepRejected         EventType = "step.rejected"
 )

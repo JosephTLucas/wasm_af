@@ -99,9 +99,8 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
         temperature: Some(0.7),
     };
 
-    let Json(llm_resp) = unsafe {
-        llm_complete(Json(llm_req)).map_err(|e| Error::msg(format!("LLM error: {e}")))?
-    };
+    let Json(llm_resp) =
+        unsafe { llm_complete(Json(llm_req)).map_err(|e| Error::msg(format!("LLM error: {e}")))? };
 
     let raw = llm_resp.content.trim();
     let cleaned = match raw.rfind("</think>") {

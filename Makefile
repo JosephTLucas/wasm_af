@@ -1,4 +1,4 @@
-.PHONY: build build-orchestrator build-plugins build-gateway wasmclaw test demo wasmclaw-demo wasmclaw-demo-api wasmclaw-demo-real clean help
+.PHONY: build build-orchestrator build-plugins build-gateway wasmclaw lint fmt test demo wasmclaw-demo wasmclaw-demo-api wasmclaw-demo-real clean help
 
 BINDIR := bin
 
@@ -36,10 +36,41 @@ wasmclaw: ## Build wasmclaw agents (router, shell, file-ops, memory, responder, 
 	@echo "  Sandbox runtime: runtimes/python.wasm"
 	@echo "  Gateway: $(BINDIR)/webhook-gateway"
 
+##@ Lint
+
+lint: ## Run all linters (mirrors CI lint stage)
+	@echo "── go fmt ──"
+	@test -z "$$(gofmt -l .)" || (echo "gofmt needed on:" && gofmt -l . && exit 1)
+	@echo "── go vet ──"
+	go vet ./...
+	@echo "── go mod tidy ──"
+	@cp go.mod go.mod.bak && cp go.sum go.sum.bak
+	@go mod tidy
+	@diff go.mod go.mod.bak >/dev/null && diff go.sum go.sum.bak >/dev/null || \
+		(echo "go.mod/go.sum not tidy — run 'go mod tidy'" && mv go.mod.bak go.mod && mv go.sum.bak go.sum && exit 1)
+	@rm -f go.mod.bak go.sum.bak
+	@echo "── cargo fmt ──"
+	@cd components && cargo fmt --check
+	@echo "── cargo clippy ──"
+	@cd components && cargo clippy --target "$$(rustc -vV | grep host | awk '{print $$2}')" -- -D warnings
+	@echo "── opa fmt ──"
+	@command -v opa >/dev/null 2>&1 || (echo "Warning: opa not installed, skipping" && exit 0) && \
+		BAD=""; for f in $$(find . -name '*.rego'); do \
+			opa fmt --fail "$$f" >/dev/null 2>&1 || BAD="$$BAD $$f"; \
+		done; \
+		if [ -n "$$BAD" ]; then echo "opa fmt needed on:$$BAD"; exit 1; fi
+
+fmt: ## Auto-format all code (Go + Rust + OPA)
+	gofmt -w .
+	go mod tidy
+	@cd components && cargo fmt
+	@command -v opa >/dev/null 2>&1 && \
+		for f in $$(find . -name '*.rego'); do opa fmt -w "$$f"; done || true
+
 ##@ Test
 
-test: ## Run all Go unit tests (orchestrator + pkg)
-	go test ./provider/orchestrator/ ./pkg/...
+test: ## Run all Go unit tests with race detection (orchestrator + pkg)
+	go test -race ./provider/orchestrator/ ./pkg/...
 
 test-plugins: ## Run Rust plugin unit tests (native target override)
 	@cd components && cargo test --target "$$(rustc -vV | grep host | awk '{print $$2}')"

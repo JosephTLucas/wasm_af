@@ -34,7 +34,7 @@ type llmResponse struct {
 
 // LLMConfig holds all LLM-related configuration captured at startup.
 type LLMConfig struct {
-	Mode        string        // "mock", "real" (local Ollama), or "api" (remote OpenAI-compat)
+	Mode        string // "mock", "real" (local Ollama), or "api" (remote OpenAI-compat)
 	BaseURL     string
 	APIKey      string
 	Model       string

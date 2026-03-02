@@ -108,9 +108,8 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
         temperature: Some(0.0),
     };
 
-    let Json(llm_resp) = unsafe {
-        llm_complete(Json(llm_req)).map_err(|e| Error::msg(format!("LLM error: {e}")))?
-    };
+    let Json(llm_resp) =
+        unsafe { llm_complete(Json(llm_req)).map_err(|e| Error::msg(format!("LLM error: {e}")))? };
 
     // Strip <think>...</think> blocks that some models (e.g. qwen3) emit
     // before the actual JSON response.
@@ -128,11 +127,9 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
         .map(|s| s.trim())
         .unwrap_or(json_str);
 
-    let route: RouterOutput = serde_json::from_str(json_str).unwrap_or_else(|_| {
-        RouterOutput {
-            skill: "direct-answer".to_string(),
-            params: RouterParams::default(),
-        }
+    let route: RouterOutput = serde_json::from_str(json_str).unwrap_or_else(|_| RouterOutput {
+        skill: "direct-answer".to_string(),
+        params: RouterParams::default(),
     });
 
     let payload = serde_json::to_string(&route)

@@ -117,12 +117,14 @@ fn mock_results(query: &str) -> Vec<SearchResult> {
         SearchResult {
             title: format!("Mock result 2 for: {query}"),
             url: "https://example.com/result-2".to_string(),
-            snippet: "Another mock result. The summarizer will produce a summary of these.".to_string(),
+            snippet: "Another mock result. The summarizer will produce a summary of these."
+                .to_string(),
         },
         SearchResult {
             title: "wasm-af documentation".to_string(),
             url: "https://github.com/jolucas/wasm-af".to_string(),
-            snippet: "WebAssembly agent framework. Policy-gated, orchestrated WASM agents.".to_string(),
+            snippet: "WebAssembly agent framework. Policy-gated, orchestrated WASM agents."
+                .to_string(),
         },
     ]
 }

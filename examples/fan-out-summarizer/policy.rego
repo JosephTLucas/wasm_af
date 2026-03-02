@@ -24,8 +24,8 @@ allow if {
 }
 
 # Policy-driven resource limits per agent type
-max_memory_pages := 64 if { input.step.agent_type == "url-fetch" }
-max_memory_pages := 256 if { input.step.agent_type == "summarizer" }
+max_memory_pages := 64 if input.step.agent_type == "url-fetch"
+max_memory_pages := 256 if input.step.agent_type == "summarizer"
 
 # Policy-driven allowed_hosts: use restricted_to if present (isolation test),
 # otherwise restrict to exactly the target domain.

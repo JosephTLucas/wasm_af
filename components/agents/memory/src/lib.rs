@@ -106,8 +106,10 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
             } else {
                 // Read existing value, concatenate, write back.
                 let Json(get_resp) = unsafe {
-                    kv_get(Json(KvGetRequest { key: req.key.clone() }))
-                        .map_err(|e| Error::msg(format!("kv_get error: {e}")))?
+                    kv_get(Json(KvGetRequest {
+                        key: req.key.clone(),
+                    }))
+                    .map_err(|e| Error::msg(format!("kv_get error: {e}")))?
                 };
                 let new_value = if get_resp.found && !get_resp.value.is_empty() {
                     format!("{}\n{}", get_resp.value, append_value)
