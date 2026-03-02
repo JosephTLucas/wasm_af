@@ -4,16 +4,16 @@
 
 WASM_AF leverages the sandboxed, ephemeral nature of WebAssembly to create a zero-trust AI agent runtime. Agents are WASM plugins — isolated by default, granted capabilities by policy, and destroyed when their work is done. No ambient authority. No lateral movement. No leaked secrets.
 
+[![Demo](wasm_demo.gif)](http://jolucas1.nvidia.com:4000/a/y7XzQyKOlKWvOdI3)
+
 ---
 
 ## Quick Start
 
 ```bash
-# Fan-out summarizer (builds everything, fetches 3 URLs in parallel, summarizes)
-./examples/fan-out-summarizer/run.sh
-
-# Wasmclaw personal assistant — with NVIDIA NIM API inference
-LLM_MODE=api NV_API_KEY="nvapi-..." ./examples/wasmclaw/run.sh
+export NV_API_KEY="nvapi-..."
+cd examples/wasmclaw
+LLM_MODE=api make reply-all-demo
 ```
 
 Prerequisites: [Rust](https://rustup.rs/), [Go](https://go.dev/) 1.25+, [NATS server](https://nats.io/) (or [wash](https://wasmcloud.com/docs/installation/) which bundles one), [jq](https://jqlang.github.io/jq/).
