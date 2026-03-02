@@ -106,7 +106,7 @@ NATS JetStream KV provides task state persistence and an immutable audit trail.
 
 **WIT-typed host interfaces.** LLM inference, shell execution, email delivery, and KV storage are WIT interfaces linked into components that need them. A component that doesn't import `host-llm` cannot call it — the import doesn't exist in its world. Credentials (API keys, SMTP) live in Rust closures; they never enter WASM memory.
 
-**Ephemeral lifecycle.** Each component is instantiate → `call_execute` → drop within a single function scope. An agent or runtime that doesn't exist can't be exploited.
+**Ephemeral lifecycle.** Each component is instantiate → `call_execute` → drop within a single function scope. An agent or runtime that doesn't exist can't be exploited. The underlying compiled `Component` is cached in memory after the first load, so instantiation is near-zero cost on subsequent invocations — disk I/O and JIT compilation happen once per process lifetime.
 
 **Bring your own agent.** External WASM components can be uploaded to a running orchestrator via `POST /agents`. They are validated against the WIT world definition, stored on disk, and registered with `capability: "untrusted"`. The BYOA Rego policy tier (`policies/byoa.rego`) applies strict sandbox defaults — no host functions, no network, 4 MiB memory, 10s timeout, mandatory approval.
 

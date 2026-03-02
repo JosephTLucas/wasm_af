@@ -48,7 +48,7 @@ _lifecycle_lines() {
           if $m == "starting step" then
             "      \($d)\($t[11:23])\($R)  \($b)▶\($R) \($at)"
           elif $m == "plugin created" then
-            "      \($d)\($t[11:23])    ↳ wasm created  (host_fns: \(.fields.host_fns // .host_fns // 0), load: \(.fields.create_ms // .create_ms // 0)ms)\($R)"
+            "      \($d)\($t[11:23])    ↳ wasm created  (host_fns: \(.fields.host_fns // .host_fns // 0), instantiate: \(.fields.create_ms // .create_ms // 0)ms)\($R)"
           elif $m == "plugin destroyed" then
             "      \($d)\($t[11:23])    ↳ wasm destroyed (exec: \(.fields.exec_ms // .exec_ms // 0)ms)\($R)"
           elif $m == "step denied" then
