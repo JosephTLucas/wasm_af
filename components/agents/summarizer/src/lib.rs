@@ -91,7 +91,7 @@ pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
     let query_label = req
         .query
         .as_deref()
-        .unwrap_or_else(|| search.query.as_str());
+        .unwrap_or(search.query.as_str());
 
     let source_count = search.results.len();
     let sources_text = search
