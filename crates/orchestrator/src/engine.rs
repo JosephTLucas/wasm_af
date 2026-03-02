@@ -159,6 +159,13 @@ impl WasmEngine {
         Ok(component)
     }
 
+    /// Evict a path from the component cache.
+    /// Must be called after overwriting or removing an external agent's .wasm file
+    /// so that the next invocation reloads from disk rather than serving stale code.
+    pub fn evict_component(&self, wasm_path: &Path) {
+        self.component_cache.write().unwrap().remove(wasm_path);
+    }
+
     /// Load, instantiate, call execute, and destroy a component in one scope.
     /// Only the host interfaces corresponding to `opts.host_fn_names` are linked.
     /// If the component imports an interface that isn't provided, instantiation
@@ -534,6 +541,33 @@ mod tests {
     fn component_cache_starts_empty() {
         let dir = TempDir::new().unwrap();
         let engine = WasmEngine::new(dir.path()).unwrap();
+        assert!(engine.component_cache.read().unwrap().is_empty());
+    }
+
+    /// Minimal valid empty WASM component (magic + component-model layer version).
+    const EMPTY_COMPONENT: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x0d, 0x00, 0x01, 0x00];
+
+    #[test]
+    fn evict_component_removes_cached_entry() {
+        let dir = TempDir::new().unwrap();
+        let wasm_path = dir.path().join("stub.wasm");
+        fs::write(&wasm_path, EMPTY_COMPONENT).unwrap();
+
+        let engine = WasmEngine::new(dir.path()).unwrap();
+        // Populate the cache by loading the component.
+        engine.get_component(&wasm_path).unwrap();
+        assert!(engine.component_cache.read().unwrap().contains_key(&wasm_path));
+
+        engine.evict_component(&wasm_path);
+        assert!(!engine.component_cache.read().unwrap().contains_key(&wasm_path));
+    }
+
+    #[test]
+    fn evict_component_is_noop_for_unknown_path() {
+        let dir = TempDir::new().unwrap();
+        let engine = WasmEngine::new(dir.path()).unwrap();
+        // Should not panic when evicting a path that was never cached.
+        engine.evict_component(&dir.path().join("nonexistent.wasm"));
         assert!(engine.component_cache.read().unwrap().is_empty());
     }
 

@@ -391,6 +391,9 @@ pub async fn handle_register_agent(
         )
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e}")))?;
 
+    // Evict any cached compiled component so the next invocation loads the new file.
+    orch.engine.evict_component(&final_path);
+
     info!(name = %upload.name, "external agent registered");
     Ok((
         StatusCode::CREATED,
@@ -409,6 +412,12 @@ pub async fn handle_remove_agent(
         ));
     }
     orch.registry.remove(&name);
+
+    // Evict the cached component so it can't be invoked after removal.
+    if let Ok(path) = orch.engine.wasm_path(&name) {
+        orch.engine.evict_component(&path);
+    }
+
     Ok(StatusCode::NO_CONTENT)
 }
 
