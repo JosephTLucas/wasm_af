@@ -14,3 +14,6 @@ serde_json = "1"
 
 [package.metadata.component]
 package = "wasm-af:agent"
+
+[lints]
+workspace = true

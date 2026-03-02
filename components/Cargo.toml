@@ -13,3 +13,6 @@ members = [
     "agents/email-send",
     "agents/email-read",
 ]
+
+[workspace.lints.clippy]
+too_many_arguments = "allow"
