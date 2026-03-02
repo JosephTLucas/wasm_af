@@ -96,15 +96,13 @@ mod tests {
 
     #[test]
     fn input_argv_defaults_to_empty_vec() {
-        let input: SandboxInput =
-            serde_json::from_str(r#"{"code":"x","language":"py"}"#).unwrap();
+        let input: SandboxInput = serde_json::from_str(r#"{"code":"x","language":"py"}"#).unwrap();
         assert!(input.argv.is_empty());
     }
 
     #[test]
     fn input_stdin_defaults_to_empty() {
-        let input: SandboxInput =
-            serde_json::from_str(r#"{"code":"x","language":"py"}"#).unwrap();
+        let input: SandboxInput = serde_json::from_str(r#"{"code":"x","language":"py"}"#).unwrap();
         assert!(input.stdin.is_empty());
     }
 

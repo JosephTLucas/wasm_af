@@ -148,13 +148,18 @@ impl WasmEngine {
     }
 
     fn get_component(&self, wasm_path: &Path) -> Result<Component, anyhow::Error> {
-        if let Some(c) = self.component_cache.read().unwrap().get(wasm_path) {
+        if let Some(c) = self
+            .component_cache
+            .read()
+            .map_err(|e| anyhow::anyhow!("component cache lock poisoned: {e}"))?
+            .get(wasm_path)
+        {
             return Ok(c.clone());
         }
         let component = Component::from_file(&self.engine, wasm_path)?;
         self.component_cache
             .write()
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!("component cache lock poisoned: {e}"))?
             .insert(wasm_path.to_path_buf(), component.clone());
         Ok(component)
     }
@@ -163,7 +168,9 @@ impl WasmEngine {
     /// Must be called after overwriting or removing an external agent's .wasm file
     /// so that the next invocation reloads from disk rather than serving stale code.
     pub fn evict_component(&self, wasm_path: &Path) {
-        self.component_cache.write().unwrap().remove(wasm_path);
+        if let Ok(mut cache) = self.component_cache.write() {
+            cache.remove(wasm_path);
+        }
     }
 
     /// Load, instantiate, call execute, and destroy a component in one scope.

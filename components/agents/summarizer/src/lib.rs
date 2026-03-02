@@ -100,8 +100,7 @@ mod tests {
 
     #[test]
     fn input_partial_fields() {
-        let input: SummarizerInput =
-            serde_json::from_str(r#"{"query":"summarize this"}"#).unwrap();
+        let input: SummarizerInput = serde_json::from_str(r#"{"query":"summarize this"}"#).unwrap();
         assert_eq!(input.query, "summarize this");
         assert!(input.model.is_empty());
         assert!(input.max_tokens.is_none());

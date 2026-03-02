@@ -209,11 +209,14 @@ async fn main() -> anyhow::Result<()> {
     if let Ok(Some(entry)) = orch.config_kv.entry("allowed-fetch-domains").await {
         let domains = parse_comma_vec(&String::from_utf8_lossy(&entry.value));
         if let Ok(mut p) = orch.policy.lock() {
-            let _ = p.update_data("/config/allowed_domains", serde_json::json!(domains));
-            info!(
-                count = domains.len(),
-                "seeded allowed-fetch-domains from KV"
-            );
+            if let Err(e) = p.update_data("/config/allowed_domains", serde_json::json!(domains)) {
+                tracing::warn!(err = %e, "failed to seed allowed-fetch-domains into OPA");
+            } else {
+                info!(
+                    count = domains.len(),
+                    "seeded allowed-fetch-domains from KV"
+                );
+            }
         }
     }
 
@@ -235,12 +238,16 @@ async fn main() -> anyhow::Result<()> {
                     Ok(entry) => {
                         let domains = parse_comma_vec(&String::from_utf8_lossy(&entry.value));
                         if let Ok(mut p) = policy.lock() {
-                            let _ = p
-                                .update_data("/config/allowed_domains", serde_json::json!(domains));
-                            info!(
-                                count = domains.len(),
-                                "allowed-fetch-domains updated from KV"
-                            );
+                            if let Err(e) =
+                                p.update_data("/config/allowed_domains", serde_json::json!(domains))
+                            {
+                                tracing::warn!(err = %e, "failed to update allowed-fetch-domains in OPA");
+                            } else {
+                                info!(
+                                    count = domains.len(),
+                                    "allowed-fetch-domains updated from KV"
+                                );
+                            }
                         }
                     }
                     Err(e) => {
@@ -275,7 +282,9 @@ async fn main() -> anyhow::Result<()> {
                                 if let Ok(meta) =
                                     serde_json::from_value::<registry::AgentMeta>(meta_val)
                                 {
-                                    let _ = registry.register(&name, meta);
+                                    if let Err(e) = registry.register(&name, meta) {
+                                        tracing::warn!(agent = %name, err = %e, "failed to register external agent from KV");
+                                    }
                                 }
                             }
                             info!("external agents synced from KV");

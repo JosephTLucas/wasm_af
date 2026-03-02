@@ -540,7 +540,11 @@ impl host_sandbox::Host for HostState {
         }
 
         let module = {
-            let cache = self.sandbox.module_cache.read().unwrap();
+            let cache = self
+                .sandbox
+                .module_cache
+                .read()
+                .map_err(|e| format!("module cache lock poisoned: {e}"))?;
             cache.get(&req.language).cloned()
         };
         let module = match module {
@@ -551,7 +555,7 @@ impl host_sandbox::Host for HostState {
                 self.sandbox
                     .module_cache
                     .write()
-                    .unwrap()
+                    .map_err(|e| format!("module cache lock poisoned: {e}"))?
                     .insert(req.language.clone(), m.clone());
                 m
             }
@@ -579,21 +583,25 @@ impl host_sandbox::Host for HostState {
         for a in &req.args {
             wasi_builder.arg(a);
         }
-        let _ = wasi_builder.preopened_dir(
-            sandbox_dir.path(),
-            "/sandbox",
-            wasmtime_wasi::DirPerms::all(),
-            wasmtime_wasi::FilePerms::all(),
-        );
+        wasi_builder
+            .preopened_dir(
+                sandbox_dir.path(),
+                "/sandbox",
+                wasmtime_wasi::DirPerms::all(),
+                wasmtime_wasi::FilePerms::all(),
+            )
+            .map_err(|e| format!("sandbox preopened_dir /sandbox: {e}"))?;
 
         let lib_dir = format!("{}/{}-lib", self.sandbox.runtimes_dir, req.language);
         if std::path::Path::new(&lib_dir).is_dir() {
-            let _ = wasi_builder.preopened_dir(
-                &lib_dir,
-                "/lib",
-                wasmtime_wasi::DirPerms::READ,
-                wasmtime_wasi::FilePerms::READ,
-            );
+            wasi_builder
+                .preopened_dir(
+                    &lib_dir,
+                    "/lib",
+                    wasmtime_wasi::DirPerms::READ,
+                    wasmtime_wasi::FilePerms::READ,
+                )
+                .map_err(|e| format!("sandbox preopened_dir /lib: {e}"))?;
         }
 
         for (host_path, guest_path) in &self.sandbox.allowed_paths {

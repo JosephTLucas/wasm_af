@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::info;
+use tracing::{info, warn};
 use wasm_af_taskstate::*;
 
 pub type AppState = Arc<Orchestrator>;
@@ -36,7 +36,12 @@ pub async fn handle_submit_task(
 
     // Evaluate submit policy
     {
-        let mut policy = orch.policy.lock().unwrap();
+        let mut policy = orch.policy.lock().map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("policy lock poisoned: {e}"),
+            )
+        })?;
         let input = serde_json::json!({
             "task_type": req.task_type,
             "query": req.query,
@@ -83,7 +88,8 @@ pub async fn handle_submit_task(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("store: {e}")))?;
 
-    orch.store
+    if let Err(e) = orch
+        .store
         .append_audit(&mut AuditEvent {
             task_id: task_id.clone(),
             event_type: EventType::TaskCreated,
@@ -91,7 +97,9 @@ pub async fn handle_submit_task(
             ..Default::default()
         })
         .await
-        .ok();
+    {
+        warn!(task_id = %task_id, err = %e, "audit: task-created write failed");
+    }
 
     let orch_clone = orch.clone();
     let tid = task_id.clone();
@@ -193,7 +201,8 @@ pub async fn handle_approve_step(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")))?;
 
-    orch.store
+    if let Err(e) = orch
+        .store
         .append_audit(&mut AuditEvent {
             task_id: task_id.clone(),
             step_id: step_id.clone(),
@@ -203,7 +212,9 @@ pub async fn handle_approve_step(
             ..Default::default()
         })
         .await
-        .ok();
+    {
+        warn!(task_id = %task_id, step_id = %step_id, err = %e, "audit: step-approved write failed");
+    }
 
     let orch_clone = orch.clone();
     let tid = task_id.clone();
@@ -234,7 +245,8 @@ pub async fn handle_reject_step(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")))?;
 
-    orch.store
+    if let Err(e) = orch
+        .store
         .append_audit(&mut AuditEvent {
             task_id: task_id.clone(),
             step_id: step_id.clone(),
@@ -244,7 +256,9 @@ pub async fn handle_reject_step(
             ..Default::default()
         })
         .await
-        .ok();
+    {
+        warn!(task_id = %task_id, step_id = %step_id, err = %e, "audit: step-rejected write failed");
+    }
 
     let orch_clone = orch.clone();
     let tid = task_id.clone();

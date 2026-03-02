@@ -64,8 +64,7 @@ mod tests {
 
     #[test]
     fn input_with_command() {
-        let input: ShellInput =
-            serde_json::from_str(r#"{"command":"ls -la /tmp"}"#).unwrap();
+        let input: ShellInput = serde_json::from_str(r#"{"command":"ls -la /tmp"}"#).unwrap();
         assert_eq!(input.command, "ls -la /tmp");
     }
 

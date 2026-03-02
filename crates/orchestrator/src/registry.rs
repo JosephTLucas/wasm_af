@@ -43,7 +43,10 @@ impl AgentRegistry {
     }
 
     pub fn get(&self, agent_type: &str) -> Result<AgentMeta, anyhow::Error> {
-        let agents = self.agents.read().unwrap();
+        let agents = self
+            .agents
+            .read()
+            .map_err(|e| anyhow::anyhow!("registry lock poisoned: {e}"))?;
         agents
             .get(agent_type)
             .cloned()
@@ -52,40 +55,53 @@ impl AgentRegistry {
 
     pub fn register(&self, name: &str, meta: AgentMeta) -> Result<(), anyhow::Error> {
         validate_agent_meta(name, &meta)?;
-        let mut agents = self.agents.write().unwrap();
+        let mut agents = self
+            .agents
+            .write()
+            .map_err(|e| anyhow::anyhow!("registry lock poisoned: {e}"))?;
         agents.insert(name.to_string(), meta);
         Ok(())
     }
 
     pub fn remove(&self, name: &str) {
-        let mut agents = self.agents.write().unwrap();
-        agents.remove(name);
+        if let Ok(mut agents) = self.agents.write() {
+            agents.remove(name);
+        }
     }
 
     pub fn list(&self) -> HashMap<String, AgentMeta> {
-        let agents = self.agents.read().unwrap();
-        agents.clone()
+        self.agents
+            .read()
+            .map(|agents| agents.clone())
+            .unwrap_or_default()
     }
 
     #[allow(dead_code)]
     pub fn list_external(&self) -> HashMap<String, AgentMeta> {
-        let agents = self.agents.read().unwrap();
-        agents
-            .iter()
-            .filter(|(_, v)| v.external)
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect()
+        self.agents
+            .read()
+            .map(|agents| {
+                agents
+                    .iter()
+                    .filter(|(_, v)| v.external)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     #[allow(dead_code)]
     pub fn clear_external(&self) {
-        let mut agents = self.agents.write().unwrap();
-        agents.retain(|_, v| !v.external);
+        if let Ok(mut agents) = self.agents.write() {
+            agents.retain(|_, v| !v.external);
+        }
     }
 
     pub fn is_platform(&self, name: &str) -> bool {
-        let agents = self.agents.read().unwrap();
-        agents.get(name).map(|m| !m.external).unwrap_or(false)
+        self.agents
+            .read()
+            .map(|agents| agents.get(name).map(|m| !m.external).unwrap_or(false))
+            .unwrap_or(false)
     }
 }
 

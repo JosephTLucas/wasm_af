@@ -68,10 +68,10 @@ fn plan_status_sets(plan: &[Step]) -> (HashSet<String>, HashSet<String>) {
 }
 
 fn collapse_values(values: Vec<String>) -> String {
-    if values.len() == 1 {
-        values.into_iter().next().unwrap()
-    } else {
-        serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string())
+    match values.len() {
+        0 => String::new(),
+        1 => values.into_iter().next().expect("len checked"),
+        _ => serde_json::to_string(&values).unwrap_or_else(|_| "[]".to_string()),
     }
 }
 
@@ -154,7 +154,7 @@ impl Orchestrator {
                             warn!(step_id = %sid, err = %e, "step failed");
                             let err_msg = e.to_string();
                             let s = sid.clone();
-                            let _ = orch
+                            if let Err(e) = orch
                                 .store
                                 .update(&tid, |st| {
                                     if let Some(i) = step_index(&st.plan, &s) {
@@ -165,13 +165,18 @@ impl Orchestrator {
                                     }
                                     Ok(())
                                 })
-                                .await;
+                                .await
+                            {
+                                error!(task_id = %tid, step_id = %sid, err = %e, "failed to mark step as failed");
+                            }
                         }
                     }));
                 }
             }
             for h in handles {
-                let _ = h.await;
+                if let Err(e) = h.await {
+                    error!(task_id = %log_id, err = %e, "step join handle failed");
+                }
             }
 
             state = match self.store.get(&task_id).await {
@@ -221,13 +226,16 @@ impl Orchestrator {
                     let next_ready = next_g.ready(&next_completed);
                     let can_dispatch = next_ready.iter().any(|id| !next_non.contains(id));
                     if !can_dispatch {
-                        let _ = self
+                        if let Err(e) = self
                             .store
                             .update(&task_id, |s| {
                                 s.status = Status::AwaitingApproval;
                                 Ok(())
                             })
-                            .await;
+                            .await
+                        {
+                            error!(task_id = %log_id, err = %e, "failed to park task for approval");
+                        }
                         info!(task_id = %log_id, "task parked, awaiting approval");
                         return;
                     }
@@ -241,13 +249,16 @@ impl Orchestrator {
             .iter()
             .any(|s| s.status == StepStatus::AwaitingApproval);
         if has_awaiting {
-            let _ = self
+            if let Err(e) = self
                 .store
                 .update(&task_id, |s| {
                     s.status = Status::AwaitingApproval;
                     Ok(())
                 })
-                .await;
+                .await
+            {
+                error!(task_id = %log_id, err = %e, "failed to park task for approval");
+            }
             info!(task_id = %log_id, "task parked, awaiting approval");
             return;
         }
@@ -259,19 +270,22 @@ impl Orchestrator {
         let all_completed = state.plan.iter().all(|s| s.status == StepStatus::Completed);
 
         if all_completed {
-            let _ = self
+            if let Err(e) = self
                 .store
                 .update(&task_id, |s| {
                     s.status = Status::Completed;
                     Ok(())
                 })
-                .await;
+                .await
+            {
+                error!(task_id = %log_id, err = %e, "failed to mark task completed");
+            }
         } else {
             self.fail_task(&task_id, "one or more steps failed or were denied")
                 .await;
         }
 
-        let _ = self
+        if let Err(e) = self
             .store
             .append_audit(&mut AuditEvent {
                 task_id: task_id.clone(),
@@ -283,7 +297,10 @@ impl Orchestrator {
                 timestamp: Utc::now(),
                 ..Default::default()
             })
-            .await;
+            .await
+        {
+            warn!(task_id = %log_id, err = %e, "failed to write terminal audit event");
+        }
 
         info!(task_id = %log_id, status = if all_completed { "completed" } else { "failed" }, "task finished");
     }
@@ -307,7 +324,8 @@ impl Orchestrator {
             })
             .await?;
 
-        self.store
+        if let Err(e) = self
+            .store
             .append_audit(&mut AuditEvent {
                 task_id: task_id.clone(),
                 step_id: step_id.clone(),
@@ -317,14 +335,19 @@ impl Orchestrator {
                 ..Default::default()
             })
             .await
-            .ok();
+        {
+            warn!(task_id, step_id = %step_id, err = %e, "audit: step-started write failed");
+        }
 
         let meta = self.registry.get(&step.agent_type)?;
 
         let prior_results = self.collect_prior_results(state, &step.id);
 
         let policy_result = {
-            let mut policy = self.policy.lock().unwrap();
+            let mut policy = self
+                .policy
+                .lock()
+                .map_err(|e| anyhow::anyhow!("policy lock poisoned: {e}"))?;
             let enriched = enrich_params(&step.params, &meta.enrichments);
             let input = serde_json::json!({
                 "step": {
@@ -365,7 +388,8 @@ impl Orchestrator {
                     Ok(())
                 })
                 .await?;
-            self.store
+            if let Err(e) = self
+                .store
                 .append_audit(&mut AuditEvent {
                     task_id: task_id.clone(),
                     step_id: step_id.clone(),
@@ -378,7 +402,9 @@ impl Orchestrator {
                     ..Default::default()
                 })
                 .await
-                .ok();
+            {
+                warn!(task_id, step_id = %step_id, err = %e, "audit: policy-deny write failed");
+            }
             anyhow::bail!("policy denied: {deny_msg}");
         }
 
@@ -398,7 +424,8 @@ impl Orchestrator {
                 })
                 .await?;
 
-            self.store
+            if let Err(e) = self
+                .store
                 .append_audit(&mut AuditEvent {
                     task_id: task_id.clone(),
                     step_id: step_id.clone(),
@@ -408,7 +435,9 @@ impl Orchestrator {
                     ..Default::default()
                 })
                 .await
-                .ok();
+            {
+                warn!(task_id, step_id = %step_id, err = %e, "audit: awaiting-approval write failed");
+            }
 
             self.publish_approval_needed(task_id, &step_id, &step.agent_type, &reason)
                 .await;
@@ -435,7 +464,7 @@ impl Orchestrator {
 
                     if still_waiting {
                         let s = sid.clone();
-                        let _ = store
+                        if let Err(e) = store
                             .update(&tid, |state| {
                                 if let Some(idx) = state.plan.iter().position(|st| st.id == s) {
                                     state.plan[idx].status = StepStatus::Denied;
@@ -444,7 +473,10 @@ impl Orchestrator {
                                 }
                                 Ok(())
                             })
-                            .await;
+                            .await
+                        {
+                            tracing::error!(task_id = %tid, step_id = %sid, err = %e, "failed to deny timed-out step");
+                        }
                         running_tasks.lock().await.remove(&tid);
                         warn!(task_id = %tid, step_id = %sid, "approval timed out, step denied");
                     }
@@ -565,7 +597,8 @@ impl Orchestrator {
             })
             .await?;
 
-        self.store
+        if let Err(e) = self
+            .store
             .append_audit(&mut AuditEvent {
                 task_id: task_id.clone(),
                 step_id: step_id.clone(),
@@ -577,7 +610,9 @@ impl Orchestrator {
                 ..Default::default()
             })
             .await
-            .ok();
+        {
+            warn!(task_id, step_id = %step_id, err = %e, "audit: step-completed write failed");
+        }
 
         info!(task_id, step_id = %step_id, agent_type = %step.agent_type, "step completed");
         Ok(())
@@ -740,15 +775,18 @@ impl Orchestrator {
 
     async fn fail_task(&self, task_id: &str, reason: &str) {
         let reason_owned = reason.to_string();
-        let _ = self
+        if let Err(e) = self
             .store
             .update(task_id, |s| {
                 s.status = Status::Failed;
                 s.error = reason_owned.clone();
                 Ok(())
             })
-            .await;
-        let _ = self
+            .await
+        {
+            error!(task_id, err = %e, "failed to mark task as failed");
+        }
+        if let Err(e) = self
             .store
             .append_audit(&mut AuditEvent {
                 task_id: task_id.to_string(),
@@ -757,7 +795,10 @@ impl Orchestrator {
                 timestamp: Utc::now(),
                 ..Default::default()
             })
-            .await;
+            .await
+        {
+            warn!(task_id, err = %e, "audit: task-failed write failed");
+        }
     }
 }
 
@@ -825,7 +866,11 @@ mod tests {
         let g = build_dag(&plan).unwrap();
         let completed: HashSet<String> = ["a".into(), "b".into()].into();
         let ready = g.ready(&completed);
-        assert_eq!(ready, vec!["c".to_string()], "d should wait for both b and c");
+        assert_eq!(
+            ready,
+            vec!["c".to_string()],
+            "d should wait for both b and c"
+        );
     }
 
     #[test]
@@ -858,26 +903,23 @@ mod tests {
         let g = build_dag(&plan).unwrap();
         let mut ready = g.ready(&HashSet::new());
         ready.sort();
-        assert_eq!(ready, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+        assert_eq!(
+            ready,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
     }
 
     // ---- step_index ----
 
     #[test]
     fn step_index_first_element() {
-        let plan = vec![
-            make_step("a", "router", &[]),
-            make_step("b", "shell", &[]),
-        ];
+        let plan = vec![make_step("a", "router", &[]), make_step("b", "shell", &[])];
         assert_eq!(step_index(&plan, "a"), Some(0));
     }
 
     #[test]
     fn step_index_second_element() {
-        let plan = vec![
-            make_step("a", "router", &[]),
-            make_step("b", "shell", &[]),
-        ];
+        let plan = vec![make_step("a", "router", &[]), make_step("b", "shell", &[])];
         assert_eq!(step_index(&plan, "b"), Some(1));
     }
 
@@ -961,7 +1003,10 @@ mod tests {
         ];
         let (completed, non_disp) = plan_status_sets(&plan);
         assert_eq!(completed, HashSet::from(["a".into()]));
-        assert_eq!(non_disp, HashSet::from(["b".into(), "d".into(), "f".into()]));
+        assert_eq!(
+            non_disp,
+            HashSet::from(["b".into(), "d".into(), "f".into()])
+        );
     }
 
     // ---- collapse_values ----
@@ -1046,6 +1091,9 @@ mod tests {
             .into_iter()
             .filter(|id| !non_disp.contains(id))
             .collect();
-        assert!(dispatchable.is_empty(), "b should be blocked by a awaiting approval");
+        assert!(
+            dispatchable.is_empty(),
+            "b should be blocked by a awaiting approval"
+        );
     }
 }
