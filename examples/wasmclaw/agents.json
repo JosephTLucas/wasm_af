@@ -45,7 +45,7 @@
     "wasm_name": "web_search",
     "capability": "http",
     "context_key": "web_search_results",
-    "host_functions": [],
+    "host_functions": ["http"],
     "payload_fields": {
       "query": "step.params.query",
       "count": 5

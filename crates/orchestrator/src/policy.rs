@@ -104,7 +104,6 @@ impl OpaEvaluator {
         }
     }
 
-    #[allow(dead_code)]
     pub fn update_data(
         &mut self,
         path: &str,
@@ -300,4 +299,195 @@ pub fn load_data_file(path: &Path) -> Result<serde_json::Value, anyhow::Error> {
     let bytes = std::fs::read(path)?;
     let data: serde_json::Value = serde_json::from_slice(&bytes)?;
     Ok(data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rv(json: &str) -> regorus::Value {
+        regorus::Value::from_json_str(json).unwrap()
+    }
+
+    // ---- parse_authz_result ----
+
+    #[test]
+    fn authz_allow_with_capabilities() {
+        let v = rv(r#"{
+            "allow": true,
+            "host_functions": ["exec_command", "llm_complete"],
+            "allowed_hosts": ["api.brave.com"],
+            "max_memory_pages": 128,
+            "max_http_bytes": 2097152,
+            "timeout_sec": 15,
+            "config": {"key1": "val1"},
+            "allowed_paths": {"/tmp/sandbox": "/sandbox"}
+        }"#);
+        let r = parse_authz_result(&v).unwrap();
+        assert!(r.permitted);
+        assert_eq!(r.host_functions, vec!["exec_command", "llm_complete"]);
+        assert_eq!(r.allowed_hosts, vec!["api.brave.com"]);
+        assert_eq!(r.max_memory_pages, Some(128));
+        assert_eq!(r.max_http_bytes, Some(2097152));
+        assert_eq!(r.timeout_sec, Some(15));
+        assert_eq!(r.config.get("key1").unwrap(), "val1");
+        assert_eq!(r.allowed_paths.get("/tmp/sandbox").unwrap(), "/sandbox");
+    }
+
+    #[test]
+    fn authz_deny_with_message() {
+        let v = rv(r#"{
+            "allow": false,
+            "deny_code": "UNTRUSTED",
+            "deny_message": "agent not in approved list"
+        }"#);
+        let r = parse_authz_result(&v).unwrap();
+        assert!(!r.permitted);
+        assert_eq!(r.deny_code.as_deref(), Some("UNTRUSTED"));
+        assert_eq!(r.deny_message.as_deref(), Some("agent not in approved list"));
+    }
+
+    #[test]
+    fn authz_deny_when_allow_missing() {
+        let v = rv(r#"{"host_functions": ["llm_complete"]}"#);
+        let r = parse_authz_result(&v).unwrap();
+        assert!(!r.permitted);
+    }
+
+    #[test]
+    fn authz_approval_required() {
+        let v = rv(r#"{
+            "allow": true,
+            "requires_approval": true,
+            "approval_reason": "email delivery requires human approval"
+        }"#);
+        let r = parse_authz_result(&v).unwrap();
+        assert!(r.permitted);
+        assert!(r.requires_approval);
+        assert_eq!(r.approval_reason, "email delivery requires human approval");
+    }
+
+    #[test]
+    fn authz_non_object_returns_deny() {
+        let v = rv(r#""just a string""#);
+        let r = parse_authz_result(&v).unwrap();
+        assert!(!r.permitted);
+        assert!(r.deny_message.unwrap().contains("no results"));
+    }
+
+    #[test]
+    fn authz_minimal_allow() {
+        let v = rv(r#"{"allow": true}"#);
+        let r = parse_authz_result(&v).unwrap();
+        assert!(r.permitted);
+        assert!(r.host_functions.is_empty());
+        assert!(r.allowed_hosts.is_empty());
+        assert_eq!(r.max_memory_pages, None);
+    }
+
+    // ---- parse_submit_result ----
+
+    #[test]
+    fn submit_allow() {
+        let v = rv(r#"{"allow": true}"#);
+        let r = parse_submit_result(&v).unwrap();
+        assert!(r.permitted);
+    }
+
+    #[test]
+    fn submit_deny_with_message() {
+        let v = rv(r#"{
+            "allow": false,
+            "deny_code": "FORBIDDEN_TYPE",
+            "deny_message": "task type not allowed"
+        }"#);
+        let r = parse_submit_result(&v).unwrap();
+        assert!(!r.permitted);
+        assert_eq!(r.deny_code.as_deref(), Some("FORBIDDEN_TYPE"));
+    }
+
+    #[test]
+    fn submit_missing_allow_key_permits() {
+        let v = rv(r#"{"other": "data"}"#);
+        let r = parse_submit_result(&v).unwrap();
+        assert!(r.permitted);
+    }
+
+    #[test]
+    fn submit_non_object_permits() {
+        let v = rv(r#"42"#);
+        let r = parse_submit_result(&v).unwrap();
+        assert!(r.permitted);
+    }
+
+    // ---- OpaEvaluator with inline policy ----
+
+    #[test]
+    fn evaluator_deny_by_default() {
+        let policy = r#"
+            package wasm_af.authz
+            default allow := false
+        "#;
+        let modules = HashMap::from([("test.rego".into(), policy.into())]);
+        let mut eval = OpaEvaluator::new(&modules, None).unwrap();
+        let input = serde_json::json!({"step": {"agent_type": "shell"}});
+        let result = eval.evaluate_step(input).unwrap();
+        assert!(!result.permitted);
+    }
+
+    #[test]
+    fn evaluator_allow_specific_agent() {
+        let policy = r#"
+            package wasm_af.authz
+            default allow := false
+            allow if { input.step.agent_type == "memory" }
+            host_functions := ["kv_get", "kv_put"] if { allow }
+        "#;
+        let modules = HashMap::from([("test.rego".into(), policy.into())]);
+        let mut eval = OpaEvaluator::new(&modules, None).unwrap();
+
+        let allowed = eval.evaluate_step(serde_json::json!({"step": {"agent_type": "memory"}})).unwrap();
+        assert!(allowed.permitted);
+        assert_eq!(allowed.host_functions, vec!["kv_get", "kv_put"]);
+
+        let denied = eval.evaluate_step(serde_json::json!({"step": {"agent_type": "shell"}})).unwrap();
+        assert!(!denied.permitted);
+    }
+
+    #[test]
+    fn evaluator_submit_policy() {
+        let policy = r#"
+            package wasm_af.submit
+            default allow := false
+            allow if { input.task_type == "chat" }
+            deny_message := "forbidden task type" if { not allow }
+        "#;
+        let modules = HashMap::from([("submit.rego".into(), policy.into())]);
+        let mut eval = OpaEvaluator::new(&modules, None).unwrap();
+
+        let ok = eval.evaluate_submit(serde_json::json!({"task_type": "chat"})).unwrap();
+        assert!(ok.permitted);
+
+        let denied = eval.evaluate_submit(serde_json::json!({"task_type": "evil"})).unwrap();
+        assert!(!denied.permitted);
+    }
+
+    #[test]
+    fn evaluator_update_data() {
+        let policy = r#"
+            package wasm_af.authz
+            default allow := false
+            allow if { input.step.agent_type in data.config.allowed_agents }
+        "#;
+        let modules = HashMap::from([("test.rego".into(), policy.into())]);
+        let mut eval = OpaEvaluator::new(&modules, None).unwrap();
+
+        let denied = eval.evaluate_step(serde_json::json!({"step": {"agent_type": "shell"}})).unwrap();
+        assert!(!denied.permitted);
+
+        eval.update_data("/config/allowed_agents", serde_json::json!(["shell"])).unwrap();
+
+        let allowed = eval.evaluate_step(serde_json::json!({"step": {"agent_type": "shell"}})).unwrap();
+        assert!(allowed.permitted);
+    }
 }

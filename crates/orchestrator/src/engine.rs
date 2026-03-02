@@ -65,6 +65,7 @@ pub struct PluginOpts {
     pub allowed_hosts: Vec<String>,
     pub host_fn_names: Vec<String>,
     pub max_mem_pages: u64,
+    pub max_http_bytes: Option<i64>,
     pub timeout: Duration,
     pub config: HashMap<String, String>,
     pub allowed_paths: HashMap<String, String>,
@@ -76,6 +77,7 @@ impl Default for PluginOpts {
             allowed_hosts: Vec::new(),
             host_fn_names: Vec::new(),
             max_mem_pages: 256,
+            max_http_bytes: None,
             timeout: Duration::from_secs(30),
             config: HashMap::new(),
             allowed_paths: HashMap::new(),
@@ -93,7 +95,7 @@ impl WasmEngine {
     pub fn new(wasm_dir: &Path) -> Result<Self, anyhow::Error> {
         let mut config = Config::new();
         config.wasm_component_model(true);
-        config.epoch_interruption(true);
+        config.consume_fuel(true);
 
         let engine = Engine::new(&config)?;
 
@@ -205,19 +207,11 @@ impl WasmEngine {
         let mut store = Store::new(&self.engine, host_state);
         store.limiter(|state| &mut state.store_limits);
 
-        // Use a large enough epoch deadline that only the dedicated timeout
-        // thread can trigger it. Each call increments by exactly 1, so
-        // concurrent agents with the same engine share epoch ticks. The
-        // deadline is set high enough that normal ticks from other agents'
-        // timeouts won't reach it — only our own thread will.
-        store.set_epoch_deadline(u64::MAX / 2);
-
-        let engine_clone = self.engine.clone();
-        let timeout = opts.timeout;
-        std::thread::spawn(move || {
-            std::thread::sleep(timeout);
-            engine_clone.increment_epoch();
-        });
+        // Fuel-based timeout: ~10M instructions per second of timeout.
+        // Each WASM instruction consumes 1 fuel. This is per-Store so
+        // concurrent agents cannot interfere with each other.
+        let fuel_budget = opts.timeout.as_secs().max(1) * 10_000_000;
+        store.set_fuel(fuel_budget).ok();
 
         let wit_input = wit::types::TaskInput {
             task_id: input.task_id.clone(),
@@ -283,6 +277,35 @@ impl WasmEngine {
         }
         Ok(())
     }
+
+    /// Stricter validation for BYOA uploads: rejects components that import
+    /// host interfaces beyond what agent-untrusted provides (host-config + WASI).
+    pub fn validate_byoa_wasm(&self, wasm_bytes: &[u8]) -> Result<(), anyhow::Error> {
+        self.validate_wasm(wasm_bytes)?;
+
+        let component = Component::new(&self.engine, wasm_bytes)?;
+        let ty = component.component_type();
+
+        let restricted_prefixes = [
+            "wasm-af:agent/host-llm",
+            "wasm-af:agent/host-kv",
+            "wasm-af:agent/host-exec",
+            "wasm-af:agent/host-sandbox",
+            "wasm-af:agent/host-email",
+        ];
+
+        for (name, _) in ty.imports(&self.engine) {
+            for prefix in &restricted_prefixes {
+                if name.contains(prefix) {
+                    anyhow::bail!(
+                        "BYOA component imports restricted interface {name:?}; \
+                         untrusted agents may only use host-config and WASI"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 fn resolve_capabilities(host_fn_names: &[String]) -> Vec<HostCapability> {
@@ -295,4 +318,145 @@ fn resolve_capabilities(host_fn_names: &[String]) -> Vec<HostCapability> {
         }
     }
     caps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn s(v: &str) -> String {
+        v.to_string()
+    }
+
+    // ---- HostCapability::from_name ----
+
+    #[test]
+    fn capability_from_name_all_variants() {
+        assert_eq!(HostCapability::from_name("llm_complete"), Some(HostCapability::Llm));
+        assert_eq!(HostCapability::from_name("kv_get"), Some(HostCapability::Kv));
+        assert_eq!(HostCapability::from_name("kv_put"), Some(HostCapability::Kv));
+        assert_eq!(HostCapability::from_name("exec_command"), Some(HostCapability::Exec));
+        assert_eq!(HostCapability::from_name("sandbox_exec"), Some(HostCapability::Sandbox));
+        assert_eq!(HostCapability::from_name("send_email"), Some(HostCapability::Email));
+        assert_eq!(HostCapability::from_name("http"), Some(HostCapability::Http));
+    }
+
+    #[test]
+    fn capability_from_name_unknown() {
+        assert_eq!(HostCapability::from_name("unknown"), None);
+        assert_eq!(HostCapability::from_name(""), None);
+    }
+
+    // ---- resolve_capabilities ----
+
+    #[test]
+    fn resolve_deduplicates_kv() {
+        let caps = resolve_capabilities(&[s("kv_get"), s("kv_put")]);
+        assert_eq!(caps.len(), 1);
+        assert_eq!(caps[0], HostCapability::Kv);
+    }
+
+    #[test]
+    fn resolve_multiple_capabilities() {
+        let caps = resolve_capabilities(&[s("llm_complete"), s("exec_command"), s("http")]);
+        assert_eq!(caps.len(), 3);
+        assert!(caps.contains(&HostCapability::Llm));
+        assert!(caps.contains(&HostCapability::Exec));
+        assert!(caps.contains(&HostCapability::Http));
+    }
+
+    #[test]
+    fn resolve_empty_input() {
+        let caps = resolve_capabilities(&[]);
+        assert!(caps.is_empty());
+    }
+
+    #[test]
+    fn resolve_ignores_unknown() {
+        let caps = resolve_capabilities(&[s("llm_complete"), s("bogus"), s("http")]);
+        assert_eq!(caps.len(), 2);
+    }
+
+    // ---- PluginOpts defaults ----
+
+    #[test]
+    fn plugin_opts_defaults() {
+        let opts = PluginOpts::default();
+        assert_eq!(opts.max_mem_pages, 256);
+        assert_eq!(opts.max_http_bytes, None);
+        assert_eq!(opts.timeout, Duration::from_secs(30));
+        assert!(opts.allowed_hosts.is_empty());
+        assert!(opts.host_fn_names.is_empty());
+    }
+
+    // ---- wasm_path validation ----
+
+    #[test]
+    fn wasm_path_rejects_special_chars() {
+        let dir = TempDir::new().unwrap();
+        let engine = WasmEngine::new(dir.path()).unwrap();
+        assert!(engine.wasm_path("../escape").is_err());
+        assert!(engine.wasm_path("foo/bar").is_err());
+        assert!(engine.wasm_path("agent;rm").is_err());
+        assert!(engine.wasm_path("agent name").is_err());
+    }
+
+    #[test]
+    fn wasm_path_allows_valid_names() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("my_agent.wasm"), b"fake").unwrap();
+        let engine = WasmEngine::new(dir.path()).unwrap();
+        let path = engine.wasm_path("my_agent").unwrap();
+        assert!(path.ends_with("my_agent.wasm"));
+    }
+
+    #[test]
+    fn wasm_path_allows_hyphens() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("web-search.wasm"), b"fake").unwrap();
+        let engine = WasmEngine::new(dir.path()).unwrap();
+        assert!(engine.wasm_path("web-search").is_ok());
+    }
+
+    #[test]
+    fn wasm_path_not_found() {
+        let dir = TempDir::new().unwrap();
+        let engine = WasmEngine::new(dir.path()).unwrap();
+        let err = engine.wasm_path("nonexistent").unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn wasm_path_checks_external_dir() {
+        let dir = TempDir::new().unwrap();
+        let ext = dir.path().join("external");
+        fs::create_dir(&ext).unwrap();
+        fs::write(ext.join("ext_agent.wasm"), b"fake").unwrap();
+        let engine = WasmEngine::new(dir.path()).unwrap();
+        assert!(engine.wasm_path("ext_agent").is_ok());
+    }
+
+    #[test]
+    fn wasm_path_prefers_root_over_external() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("agent.wasm"), b"root").unwrap();
+        let ext = dir.path().join("external");
+        fs::create_dir(&ext).unwrap();
+        fs::write(ext.join("agent.wasm"), b"ext").unwrap();
+        let engine = WasmEngine::new(dir.path()).unwrap();
+        let path = engine.wasm_path("agent").unwrap();
+        // Should resolve to root, not external
+        assert!(!path.to_string_lossy().contains("external"));
+    }
+
+    // ---- Component cache ----
+
+    #[test]
+    fn component_cache_starts_empty() {
+        let dir = TempDir::new().unwrap();
+        let engine = WasmEngine::new(dir.path()).unwrap();
+        assert!(engine.component_cache.read().unwrap().is_empty());
+    }
 }

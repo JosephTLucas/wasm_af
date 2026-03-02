@@ -38,8 +38,8 @@ Most agent frameworks enforce security through **convention**: configure your to
                               │  POST /tasks
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│              Rust Orchestrator Binary (axum)                  │
-│                                                              │
+│              Rust Orchestrator Binary (axum)                │
+│                                                             │
 │  ┌──────────┐  ┌──────────────┐  ┌───────────────────────┐  │
 │  │ HTTP API │  │ Plan Builder │  │ Task State (NATS KV)  │  │
 │  │ :8080    │──│              │──│ + Audit Log           │  │
@@ -58,7 +58,7 @@ Most agent frameworks enforce security through **convention**: configure your to
 │            │     Step Runner     │                           │
 │            │  (parallel dispatch)│                           │
 │            └──┬──────┬──────┬───┘                           │
-│               │      │      │    per step:                   │
+│               │      │      │    per step:                  │
 │            ┌──▼──┐┌──▼──┐┌──▼──┐  compose Linker            │
 │            │load ││load ││load │  → link permitted caps      │
 │            │.wasm││.wasm││.wasm│  → call execute()           │
@@ -75,20 +75,13 @@ Most agent frameworks enforce security through **convention**: configure your to
 │                                                              │
 │  ┌──────────────────────────────────────────┐                │
 │  │  OPA Policy Engine (regorus, embedded)   │                │
-│  │  • data.wasm_af.authz — step policy     │                │
-│  │  • data.wasm_af.submit — submit policy  │                │
-│  │  • data store ← NATS KV live updates    │                │
-│  │  • structured decisions: allowed_hosts, │                │
-│  │    memory, timeout, config, paths,      │                │
-│  │    host_functions                       │                │
-│  │  • BYOA tier: untrusted cap → max       │                │
-│  │    restriction + approval gate          │                │
+│  │  • structured decisions: allowed_hosts,  │                │
+│  │    memory, timeout, config, paths,       │                │
+│  │    host_functions                        │                │
 │  └──────────────────────────────────────────┘                │
 │                                                              │
 │  ┌──────────────────────────────────────────┐                │
 │  │  WIT Interface Registry                  │                │
-│  │  • host-llm, host-kv, host-exec,        │                │
-│  │    host-sandbox, host-email, host-config │                │
 │  │  • linked selectively per step via OPA   │                │
 │  │  • missing import → instantiation fails  │                │
 │  └──────────────────────────────────────────┘                │

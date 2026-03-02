@@ -109,6 +109,12 @@ async fn main() -> anyhow::Result<()> {
             .and_then(|v| v.parse().ok()),
         client: llm_client,
     };
+    if llm_state.mode == "mock" {
+        tracing::warn!(
+            "LLM_MODE=mock: all LLM calls return canned responses. \
+             Set LLM_MODE=api with LLM_BASE_URL and LLM_API_KEY for real inference."
+        );
+    }
     info!(mode = %llm_state.mode, model = %llm_state.model, "LLM configured");
 
     // Shell config
@@ -139,7 +145,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Sandbox config
     let mut sandbox_config = wasmtime::Config::new();
-    sandbox_config.epoch_interruption(true);
+    sandbox_config.consume_fuel(true);
     let sandbox_engine = std::sync::Arc::new(
         wasmtime::Engine::new(&sandbox_config).expect("sandbox engine"),
     );
@@ -160,6 +166,15 @@ async fn main() -> anyhow::Result<()> {
         module_cache: std::sync::Arc::new(std::sync::RwLock::new(HashMap::new())),
     };
 
+    // Memory KV (cached handle for agent kv_get/kv_put)
+    let memory_kv = js
+        .create_key_value(async_nats::jetstream::kv::Config {
+            bucket: "wasm-af-memory".to_string(),
+            description: "wasm-af agent memory store".to_string(),
+            ..Default::default()
+        })
+        .await?;
+
     // Email config
     let email_state = host::EmailState {
         allowed_domains: env_or("EMAIL_ALLOWED_DOMAINS", "example.com,partner-corp.com")
@@ -177,6 +192,7 @@ async fn main() -> anyhow::Result<()> {
         llm_state,
         kv_state: host::KvState {
             nats_client: Some(nats_client.clone()),
+            memory_kv: Some(std::sync::Arc::new(memory_kv)),
         },
         exec_state,
         sandbox_state,

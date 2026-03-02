@@ -30,7 +30,7 @@ pub struct SubmitTaskResponse {
 pub async fn handle_submit_task(
     State(orch): State<AppState>,
     Json(req): Json<SubmitTaskRequest>,
-) -> Result<Json<SubmitTaskResponse>, (StatusCode, String)> {
+) -> Result<(StatusCode, Json<SubmitTaskResponse>), (StatusCode, String)> {
     let task_id = uuid::Uuid::new_v4().to_string();
 
     // Evaluate submit policy
@@ -95,7 +95,7 @@ pub async fn handle_submit_task(
         orch_clone.run_task(tid).await;
     });
 
-    Ok(Json(SubmitTaskResponse { task_id }))
+    Ok((StatusCode::ACCEPTED, Json(SubmitTaskResponse { task_id })))
 }
 
 pub async fn handle_get_task(
@@ -333,18 +333,22 @@ pub async fn handle_register_agent(
     }
 
     orch.engine
-        .validate_wasm(&wasm)
+        .validate_byoa_wasm(&wasm)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("validation failed: {e}")))?;
 
     let wasm_dir = orch.engine.wasm_dir();
     let external_path = wasm_dir.join("external");
     std::fs::create_dir_all(&external_path)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("mkdir: {e}")))?;
-    std::fs::write(
-        external_path.join(format!("{}.wasm", upload.name)),
-        &wasm,
-    )
-    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("write: {e}")))?;
+    let final_path = external_path.join(format!("{}.wasm", upload.name));
+    let tmp_path = external_path.join(format!(".{}.wasm.tmp", upload.name));
+    std::fs::write(&tmp_path, &wasm)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("write tmp: {e}")))?;
+    std::fs::rename(&tmp_path, &final_path)
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp_path);
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("rename: {e}"))
+        })?;
 
     let context_key = if upload.context_key.is_empty() {
         format!("{}_result", upload.name)
@@ -395,6 +399,7 @@ fn build_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
         "chat" | "skill-demo" => build_chat_plan(req, task_id),
         "email-reply" => build_email_reply_plan(req, task_id),
         "reply-all" => build_reply_all_plan(req, task_id),
+        "fan-out-summarizer" => build_fan_out_plan(req, task_id),
         "generic" => build_generic_plan(req, task_id),
         _ => build_generic_plan(req, task_id),
     }
@@ -507,6 +512,46 @@ fn build_reply_all_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
     steps
 }
 
+/// Fan-out-summarizer: parallel url-fetch (or web-search) steps -> summarizer
+/// Accepts `urls` (comma-separated) or `query` in context. Falls back to
+/// generic plan if `context.steps` is provided (for full custom DAGs).
+fn build_fan_out_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
+    if req.context.contains_key("steps") {
+        return build_generic_plan(req, task_id);
+    }
+
+    let urls: Vec<String> = req
+        .context
+        .get("urls")
+        .map(|u| u.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+
+    if urls.is_empty() {
+        let mut steps = Vec::new();
+        steps.push(make_step(task_id, 0, "web-search", &[], HashMap::from([
+            ("query".to_string(), req.query.clone()),
+        ])));
+        steps.push(make_step(task_id, 1, "summarizer", &[0], HashMap::new()));
+        return steps;
+    }
+
+    let mut steps = Vec::new();
+    for (i, url) in urls.iter().enumerate() {
+        steps.push(make_step(task_id, i, "url-fetch", &[], HashMap::from([
+            ("url".to_string(), url.clone()),
+        ])));
+    }
+    let fetch_indices: Vec<usize> = (0..urls.len()).collect();
+    steps.push(make_step(
+        task_id,
+        urls.len(),
+        "summarizer",
+        &fetch_indices,
+        HashMap::new(),
+    ));
+    steps
+}
+
 fn build_generic_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
     if let Some(steps_json) = req.context.get("steps") {
         #[derive(Deserialize)]
@@ -552,4 +597,160 @@ fn build_generic_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
             .collect(),
         ..Default::default()
     }]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn req(task_type: &str, query: &str, ctx: Vec<(&str, &str)>) -> SubmitTaskRequest {
+        SubmitTaskRequest {
+            task_type: task_type.into(),
+            query: query.into(),
+            context: ctx.into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
+        }
+    }
+
+    // ---- Chat plan ----
+
+    #[test]
+    fn chat_plan_has_four_steps() {
+        let r = req("chat", "hello", vec![("message", "hello")]);
+        let plan = build_plan(&r, "t1");
+        assert_eq!(plan.len(), 4);
+    }
+
+    #[test]
+    fn chat_plan_step_types() {
+        let r = req("chat", "hello", vec![("message", "hello")]);
+        let plan = build_plan(&r, "t1");
+        let types: Vec<&str> = plan.iter().map(|s| s.agent_type.as_str()).collect();
+        assert_eq!(types, vec!["memory", "router", "responder", "memory"]);
+    }
+
+    #[test]
+    fn chat_plan_dependency_chain() {
+        let r = req("chat", "hello", vec![]);
+        let plan = build_plan(&r, "t1");
+        assert!(plan[0].depends_on.is_empty());
+        assert_eq!(plan[1].depends_on, vec!["t1-step-0"]);
+        assert_eq!(plan[2].depends_on, vec!["t1-step-1"]);
+        assert_eq!(plan[3].depends_on, vec!["t1-step-2"]);
+    }
+
+    // ---- Reply-all plan ----
+
+    #[test]
+    fn reply_all_plan_default_two_emails() {
+        let r = req("reply-all", "reply all", vec![("message", "reply")]);
+        let plan = build_plan(&r, "t1");
+        // 1 email-read + 2*(responder + email-send) = 5
+        assert_eq!(plan.len(), 5);
+        assert_eq!(plan[0].agent_type, "email-read");
+    }
+
+    #[test]
+    fn reply_all_plan_parallel_branches() {
+        let r = req("reply-all", "reply all", vec![("email_count", "3")]);
+        let plan = build_plan(&r, "t1");
+        // 1 + 3*2 = 7
+        assert_eq!(plan.len(), 7);
+        // All responders depend on email-read (step 0), not each other
+        assert_eq!(plan[1].depends_on, vec!["t1-step-0"]);
+        assert_eq!(plan[3].depends_on, vec!["t1-step-0"]);
+        assert_eq!(plan[5].depends_on, vec!["t1-step-0"]);
+    }
+
+    #[test]
+    fn reply_all_email_send_depends_on_its_responder() {
+        let r = req("reply-all", "reply all", vec![("email_count", "2")]);
+        let plan = build_plan(&r, "t1");
+        // email-send[0] at index 2 depends on responder[0] at index 1
+        assert_eq!(plan[2].agent_type, "email-send");
+        assert_eq!(plan[2].depends_on, vec!["t1-step-1"]);
+        // email-send[1] at index 4 depends on responder[1] at index 3
+        assert_eq!(plan[4].agent_type, "email-send");
+        assert_eq!(plan[4].depends_on, vec!["t1-step-3"]);
+    }
+
+    // ---- Fan-out plan ----
+
+    #[test]
+    fn fan_out_plan_with_urls() {
+        let r = req("fan-out-summarizer", "", vec![
+            ("urls", "https://a.com,https://b.com,https://c.com"),
+        ]);
+        let plan = build_plan(&r, "t1");
+        // 3 url-fetch + 1 summarizer = 4
+        assert_eq!(plan.len(), 4);
+        assert_eq!(plan[0].agent_type, "url-fetch");
+        assert_eq!(plan[1].agent_type, "url-fetch");
+        assert_eq!(plan[2].agent_type, "url-fetch");
+        assert_eq!(plan[3].agent_type, "summarizer");
+    }
+
+    #[test]
+    fn fan_out_summarizer_depends_on_all_fetches() {
+        let r = req("fan-out-summarizer", "", vec![
+            ("urls", "https://a.com,https://b.com"),
+        ]);
+        let plan = build_plan(&r, "t1");
+        let summarizer = plan.last().unwrap();
+        assert_eq!(summarizer.agent_type, "summarizer");
+        assert_eq!(summarizer.depends_on, vec!["t1-step-0", "t1-step-1"]);
+    }
+
+    #[test]
+    fn fan_out_no_urls_falls_back_to_web_search() {
+        let r = req("fan-out-summarizer", "some query", vec![]);
+        let plan = build_plan(&r, "t1");
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].agent_type, "web-search");
+        assert_eq!(plan[1].agent_type, "summarizer");
+    }
+
+    #[test]
+    fn fan_out_with_context_steps_uses_generic() {
+        let steps_json = r#"[{"agent_type":"url-fetch","params":{"url":"https://x.com"}},{"agent_type":"summarizer","depends_on":["t1-step-0"]}]"#;
+        let r = req("fan-out-summarizer", "", vec![("steps", steps_json)]);
+        let plan = build_plan(&r, "t1");
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].agent_type, "url-fetch");
+    }
+
+    // ---- Generic plan ----
+
+    #[test]
+    fn generic_plan_with_steps_json() {
+        let steps_json = r#"[
+            {"agent_type": "web-search", "params": {"query": "test"}},
+            {"agent_type": "summarizer", "depends_on": ["t1-step-0"]}
+        ]"#;
+        let r = req("generic", "", vec![("steps", steps_json)]);
+        let plan = build_plan(&r, "t1");
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan[0].agent_type, "web-search");
+        assert_eq!(plan[0].params.get("query").unwrap(), "test");
+        assert_eq!(plan[1].depends_on, vec!["t1-step-0"]);
+    }
+
+    #[test]
+    fn generic_plan_fallback_single_step() {
+        let r = req("custom-task", "", vec![("key", "value")]);
+        let plan = build_plan(&r, "t1");
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].agent_type, "custom-task");
+        assert_eq!(plan[0].params.get("key").unwrap(), "value");
+    }
+
+    // ---- Step structure ----
+
+    #[test]
+    fn step_keys_are_correct() {
+        let r = req("chat", "hi", vec![]);
+        let plan = build_plan(&r, "task-123");
+        assert_eq!(plan[0].id, "task-123-step-0");
+        assert_eq!(plan[0].input_key, "task-123-step-0.input");
+        assert_eq!(plan[0].output_key, "task-123-step-0.output");
+    }
 }

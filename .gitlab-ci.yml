@@ -11,8 +11,9 @@ variables:
 
 go-lint:
   stage: lint
-  image: golang:1.25
+  image: golang:1.23
   script:
+    - cd cmd/webhook-gateway
     - test -z "$(gofmt -l .)" || (echo "gofmt needed on:" && gofmt -l . && exit 1)
     - go vet ./...
     - go mod tidy
@@ -22,7 +23,7 @@ rust-lint:
   stage: lint
   image: rust:latest
   before_script:
-    - rustup target add wasm32-unknown-unknown wasm32-wasip1
+    - rustup target add wasm32-wasip2
     - rustup component add clippy rustfmt
   script:
     - cd components
@@ -57,15 +58,16 @@ opa-lint:
 
 go-test:
   stage: test
-  image: golang:1.25
+  image: golang:1.23
   script:
-    - go test -race ./provider/orchestrator/ ./pkg/...
+    - cd cmd/webhook-gateway
+    - go build ./...
 
 rust-test:
   stage: test
   image: rust:latest
   before_script:
-    - rustup target add wasm32-unknown-unknown wasm32-wasip1
+    - rustup target add wasm32-wasip2
   script:
     - cd components
     - HOST_TARGET=$(rustc -vV | grep host | awk '{print $2}')
@@ -96,15 +98,13 @@ build-plugins:
   stage: build
   image: rust:latest
   before_script:
-    - rustup target add wasm32-unknown-unknown wasm32-wasip1
+    - rustup target add wasm32-wasip2
   script:
     - cd components
     - cargo build --release
-    - cargo build --release -p file-ops --target wasm32-wasip1
   artifacts:
     paths:
-      - components/target/wasm32-unknown-unknown/release/*.wasm
-      - components/target/wasm32-wasip1/release/file_ops.wasm
+      - components/target/wasm32-wasip2/release/*.wasm
     expire_in: 1 week
   cache:
     key: rust-${CI_COMMIT_REF_SLUG}
@@ -114,12 +114,24 @@ build-plugins:
 
 build-orchestrator:
   stage: build
-  image: golang:1.25
+  image: rust:latest
   script:
     - mkdir -p bin
-    - go build -o bin/orchestrator ./provider/orchestrator/
-    - go build -o bin/webhook-gateway ./cmd/webhook-gateway/
+    - cargo build --release -p orchestrator
+    - cp target/release/orchestrator bin/orchestrator
   artifacts:
     paths:
-      - bin/
+      - bin/orchestrator
+    expire_in: 1 week
+
+build-webhook-gateway:
+  stage: build
+  image: golang:1.23
+  script:
+    - mkdir -p bin
+    - cd cmd/webhook-gateway
+    - go build -o ../../bin/webhook-gateway .
+  artifacts:
+    paths:
+      - bin/webhook-gateway
     expire_in: 1 week

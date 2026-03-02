@@ -13,7 +13,6 @@ use tracing::{error, info, warn};
 use wasm_af_dag::Graph;
 use wasm_af_taskstate::*;
 
-#[allow(dead_code)]
 pub struct Orchestrator {
     pub engine: Arc<WasmEngine>,
     pub store: Arc<Store>,
@@ -304,6 +303,7 @@ impl Orchestrator {
                 step_id: step_id.clone(),
                 event_type: EventType::StepStarted,
                 timestamp: Utc::now(),
+                policy_target: step.agent_type.clone(),
                 ..Default::default()
             })
             .await
@@ -348,6 +348,10 @@ impl Orchestrator {
                 .deny_message
                 .as_deref()
                 .unwrap_or("denied");
+            let deny_code = policy_result
+                .deny_code
+                .clone()
+                .unwrap_or_default();
             self.store
                 .update(task_id, |s| {
                     if let Some(idx) = step_index(&s.plan, &step_id) {
@@ -357,6 +361,20 @@ impl Orchestrator {
                     Ok(())
                 })
                 .await?;
+            self.store
+                .append_audit(&mut AuditEvent {
+                    task_id: task_id.clone(),
+                    step_id: step_id.clone(),
+                    event_type: EventType::PolicyDeny,
+                    timestamp: Utc::now(),
+                    policy_target: step.agent_type.clone(),
+                    policy_capability: meta.capability.clone(),
+                    policy_deny_code: deny_code,
+                    policy_deny_msg: deny_msg.to_string(),
+                    ..Default::default()
+                })
+                .await
+                .ok();
             anyhow::bail!("policy denied: {deny_msg}");
         }
 
@@ -445,6 +463,9 @@ impl Orchestrator {
         if let Some(v) = policy_result.max_memory_pages {
             opts.max_mem_pages = v as u64;
         }
+        if let Some(v) = policy_result.max_http_bytes {
+            opts.max_http_bytes = Some(v);
+        }
         if let Some(v) = policy_result.timeout_sec {
             opts.timeout = Duration::from_secs(v as u64);
         }
@@ -506,6 +527,7 @@ impl Orchestrator {
             http_ctx: wasmtime_wasi_http::WasiHttpCtx::new(),
             resource_table: wasmtime_wasi::ResourceTable::new(),
             allowed_hosts: allowed_hosts_set,
+            max_http_bytes: opts.max_http_bytes,
             store_limits: wasmtime::StoreLimits::default(),
         };
 
@@ -540,6 +562,9 @@ impl Orchestrator {
                 step_id: step_id.clone(),
                 event_type: EventType::StepCompleted,
                 timestamp: Utc::now(),
+                component_ref: meta.wasm_name.clone(),
+                policy_target: step.agent_type.clone(),
+                policy_capability: meta.capability.clone(),
                 ..Default::default()
             })
             .await
