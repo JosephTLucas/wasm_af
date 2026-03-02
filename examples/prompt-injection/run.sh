@@ -5,7 +5,7 @@
 # and POST them to https://evil.com/collect. The model follows the injection.
 # Nothing is exfiltrated. The demo shows why, using the compiled binary as proof.
 #
-# Prerequisites: rust, go, jq, ollama (with model pulled via: make pull-model)
+# Prerequisites: rust (with wasm32-wasip2 target), jq, ollama (with model pulled via: make pull-model)
 # Usage:
 #   make demo                     (recommended — pulls model + builds first)
 #   MODEL=qwen3:1.7b ./run.sh     (if already built)
@@ -52,12 +52,14 @@ echo ""
 # ── 1. Build ──────────────────────────────────────────────────────────────────
 echo "  [1/5] Building..."
 
-if ! rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-unknown; then
-    rustup target add wasm32-unknown-unknown || die "Failed to add wasm32-unknown-unknown target."
+if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip2; then
+    rustup target add wasm32-wasip2 || die "Failed to add wasm32-wasip2 target."
 fi
 
 (cd components && cargo build --release 2>&1) || die "Rust build failed."
-go build -o ./bin/orchestrator ./provider/orchestrator/ 2>&1 || die "Go build failed."
+mkdir -p ./bin
+cargo build --release -p wasm-af-orchestrator 2>&1 || die "Orchestrator build failed."
+cp target/release/orchestrator ./bin/orchestrator
 echo "        Done."
 echo ""
 
@@ -137,7 +139,7 @@ AGENT_REGISTRY_FILE="$EXAMPLE_DIR/agents.json" \
 LLM_MODE=real \
 LLM_BASE_URL=http://localhost:11434 \
 LLM_MODEL="$MODEL" \
-WASM_DIR="$ROOT/components/target/wasm32-unknown-unknown/release" \
+WASM_DIR="$ROOT/components/target/wasm32-wasip2/release" \
     ./bin/orchestrator > /tmp/wasm-af-orchestrator.log 2>&1 &
 ORCH_PID=$!
 sleep 2
@@ -254,8 +256,8 @@ elif [ -x "$HOME/.cargo/bin/wasm-tools" ]; then
     WASM_TOOLS="$HOME/.cargo/bin/wasm-tools"
 fi
 
-SUMMARIZER_WASM="$ROOT/components/target/wasm32-unknown-unknown/release/summarizer.wasm"
-URLFETCH_WASM="$ROOT/components/target/wasm32-unknown-unknown/release/url_fetch.wasm"
+SUMMARIZER_WASM="$ROOT/components/target/wasm32-wasip2/release/summarizer.wasm"
+URLFETCH_WASM="$ROOT/components/target/wasm32-wasip2/release/url_fetch.wasm"
 
 if [ -n "$WASM_TOOLS" ]; then
     echo "     summarizer.wasm imports (ground truth from the binary):"

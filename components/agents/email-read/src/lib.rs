@@ -1,5 +1,9 @@
-use agent_types::{TaskInput, TaskOutput};
-use extism_pdk::*;
+wit_bindgen::generate!({
+    world: "agent",
+    path: "../../../wit/agent.wit",
+});
+
+use wasm_af::agent::host_config::get_config;
 
 #[derive(serde::Deserialize)]
 struct EmailReadInput {
@@ -24,39 +28,44 @@ struct EmailReadOutput {
     count: usize,
 }
 
-#[plugin_fn]
-pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
-    let req: EmailReadInput = serde_json::from_str(&input.payload)
-        .map_err(|e| Error::msg(format!("payload parse error: {e}")))?;
+struct EmailReadAgent;
 
-    // OPA injects email_api_key into plugin config. Without it, this agent
-    // cannot authenticate — fail loudly so misconfiguration is obvious.
-    let _api_key = config::get("email_api_key")
-        .unwrap_or(None)
-        .ok_or_else(|| Error::msg("email_api_key not in config — OPA policy did not inject it"))?;
+impl Guest for EmailReadAgent {
+    fn execute(input: TaskInput) -> Result<TaskOutput, String> {
+        let req: EmailReadInput = serde_json::from_str(&input.payload)
+            .map_err(|e| format!("payload parse error: {e}"))?;
 
-    let folder = if req.folder.is_empty() {
-        "inbox".to_string()
-    } else {
-        req.folder
-    };
-    let limit = req.count.unwrap_or(5) as usize;
+        let _api_key = get_config("email_api_key")
+            .ok_or_else(|| {
+                "email_api_key not in config — OPA policy did not inject it".to_string()
+            })?;
 
-    let all = mock_inbox(&folder);
-    let emails: Vec<Email> = all.into_iter().take(limit).collect();
-    let count = emails.len();
+        let folder = if req.folder.is_empty() {
+            "inbox".to_string()
+        } else {
+            req.folder
+        };
+        let limit = req.count.unwrap_or(5) as usize;
 
-    let payload = serde_json::to_string(&EmailReadOutput {
-        folder,
-        emails,
-        count,
-    })?;
+        let all = mock_inbox(&folder);
+        let emails: Vec<Email> = all.into_iter().take(limit).collect();
+        let count = emails.len();
 
-    Ok(Json(TaskOutput {
-        payload,
-        metadata: vec![],
-    }))
+        let payload = serde_json::to_string(&EmailReadOutput {
+            folder,
+            emails,
+            count,
+        })
+        .map_err(|e| format!("serialization error: {e}"))?;
+
+        Ok(TaskOutput {
+            payload,
+            metadata: vec![],
+        })
+    }
 }
+
+export!(EmailReadAgent);
 
 fn mock_inbox(_folder: &str) -> Vec<Email> {
     vec![

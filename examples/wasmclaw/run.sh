@@ -42,23 +42,27 @@ _lifecycle_lines() {
     local tid="$1"
     grep "$tid" /tmp/wasm-af-orchestrator.log 2>/dev/null \
         | jq -r --arg g "$GRN" --arg r "$RED" --arg y "$YLW" --arg d "$DIM" --arg R "$RST" --arg b "$BLD" \
-          'select(.msg == "starting step" or .msg == "plugin created" or .msg == "plugin destroyed" or .msg == "step completed" or .msg == "step denied" or .msg == "step awaiting approval" or .msg == "step approved" or .msg == "task parked, awaiting approval") |
-          if .msg == "starting step" then
-            "      \($d)\(.time[11:23])\($R)  \($b)▶\($R) \(.agent_type)"
-          elif .msg == "plugin created" then
-            "      \($d)\(.time[11:23])    ↳ wasm created  (host_fns: \(.host_fns), load: \(.create_ms)ms)\($R)"
-          elif .msg == "plugin destroyed" then
-            "      \($d)\(.time[11:23])    ↳ wasm destroyed (exec: \(.exec_ms)ms)\($R)"
-          elif .msg == "step denied" then
-            "      \($d)\(.time[11:23])\($R)  \($r)✗ \(.agent_type // "step") denied\($R)"
-          elif .msg == "step completed" then
-            "      \($d)\(.time[11:23])\($R)  \($g)✓ \(.agent_type)\($R)"
-          elif .msg == "step awaiting approval" then
-            "      \($d)\(.time[11:23])\($R)  \($y)⏸ \(.agent_type // "step") awaiting approval\($R) \($d)(\(.reason // ""))\($R)"
-          elif .msg == "step approved" then
-            "      \($d)\(.time[11:23])\($R)  \($g)✓ approved\($R) \($d)(by \(.approved_by // "unknown"))\($R)"
-          elif .msg == "task parked, awaiting approval" then
-            "      \($d)\(.time[11:23])    ↳ task parked — waiting for human decision\($R)"
+          '(.fields.message // .msg) as $m | (.timestamp // .time) as $t |
+          select($m == "starting step" or $m == "plugin created" or $m == "plugin destroyed" or $m == "step completed" or $m == "step denied" or $m == "step awaiting approval" or $m == "step approved" or $m == "task parked, awaiting approval" or $m == "task finished") |
+          (.fields.agent_type // .fields.agent // .agent_type // "") as $at |
+          if $m == "starting step" then
+            "      \($d)\($t[11:23])\($R)  \($b)▶\($R) \($at)"
+          elif $m == "plugin created" then
+            "      \($d)\($t[11:23])    ↳ wasm created  (host_fns: \(.fields.host_fns // .host_fns // 0), load: \(.fields.create_ms // .create_ms // 0)ms)\($R)"
+          elif $m == "plugin destroyed" then
+            "      \($d)\($t[11:23])    ↳ wasm destroyed (exec: \(.fields.exec_ms // .exec_ms // 0)ms)\($R)"
+          elif $m == "step denied" then
+            "      \($d)\($t[11:23])\($R)  \($r)✗ \($at) denied\($R)"
+          elif $m == "step completed" then
+            "      \($d)\($t[11:23])\($R)  \($g)✓ \($at)\($R)"
+          elif $m == "step awaiting approval" then
+            "      \($d)\($t[11:23])\($R)  \($y)⏸ \($at) awaiting approval\($R) \($d)(\(.fields.reason // .reason // ""))\($R)"
+          elif $m == "step approved" then
+            "      \($d)\($t[11:23])\($R)  \($g)✓ approved\($R) \($d)(by \(.fields.approved_by // .approved_by // "unknown"))\($R)"
+          elif $m == "task parked, awaiting approval" then
+            "      \($d)\($t[11:23])    ↳ task parked — waiting for human decision\($R)"
+          elif $m == "task finished" then
+            "      \($d)\($t[11:23])    ↳ task \(.fields.status // "done")\($R)"
           else empty end' 2>/dev/null || true
 }
 
@@ -405,37 +409,37 @@ elif [ -x "$HOME/.cargo/bin/wasm-tools" ]; then
     WASM_TOOLS="$HOME/.cargo/bin/wasm-tools"
 fi
 
-FILE_OPS_WASM="$ROOT/components/target/wasm32-unknown-unknown/release/file_ops.wasm"
-SANDBOX_WASM="$ROOT/components/target/wasm32-unknown-unknown/release/sandbox_exec.wasm"
-EMAIL_SEND_WASM="$ROOT/components/target/wasm32-unknown-unknown/release/email_send.wasm"
-EMAIL_READ_WASM="$ROOT/components/target/wasm32-unknown-unknown/release/email_read.wasm"
+FILE_OPS_WASM="$ROOT/components/target/wasm32-wasip2/release/file_ops.wasm"
+SANDBOX_WASM="$ROOT/components/target/wasm32-wasip2/release/sandbox_exec.wasm"
+EMAIL_SEND_WASM="$ROOT/components/target/wasm32-wasip2/release/email_send.wasm"
+EMAIL_READ_WASM="$ROOT/components/target/wasm32-wasip2/release/email_read.wasm"
 
 if [ -n "$WASM_TOOLS" ]; then
-    echo "  ${BLD}file_ops.wasm${RST} — extism:host/user imports:"
+    echo "  ${BLD}file_ops.wasm${RST} — WIT imports:"
     HOST_IMPORTS=$($WASM_TOOLS print "$FILE_OPS_WASM" 2>/dev/null \
-        | grep 'extism:host/user' || true)
+        | grep -E 'wasm-af:agent/' || true)
     if [ -z "$HOST_IMPORTS" ]; then
-        echo "    ${GRN}(none)${RST} — uses WASI std::fs only. Wazero enforces path boundaries."
+        echo "    ${GRN}(none)${RST} — uses WASI std::fs only. Wasmtime enforces path boundaries."
     else
         echo "$HOST_IMPORTS" | sed 's/^/    /'
     fi
     echo ""
 
-    echo "  ${BLD}sandbox_exec.wasm${RST} — extism:host/user imports:"
+    echo "  ${BLD}sandbox_exec.wasm${RST} — WIT imports:"
     $WASM_TOOLS print "$SANDBOX_WASM" 2>/dev/null \
-        | grep 'extism:host/user' | sed 's/^/    /' || \
+        | grep -E 'wasm-af:agent/' | sed 's/^/    /' || \
         echo "    (wasm-tools print failed)"
     echo ""
 
-    echo "  ${BLD}email_send.wasm${RST} — extism:host/user imports:"
+    echo "  ${BLD}email_send.wasm${RST} — WIT imports:"
     $WASM_TOOLS print "$EMAIL_SEND_WASM" 2>/dev/null \
-        | grep 'extism:host/user' | sed 's/^/    /' || \
+        | grep -E 'wasm-af:agent/' | sed 's/^/    /' || \
         echo "    (wasm-tools print failed)"
     echo ""
 
-    echo "  ${BLD}email_read.wasm${RST} — extism:host/user imports:"
+    echo "  ${BLD}email_read.wasm${RST} — WIT imports:"
     EMAIL_READ_IMPORTS=$($WASM_TOOLS print "$EMAIL_READ_WASM" 2>/dev/null \
-        | grep 'extism:host/user' || true)
+        | grep -E 'wasm-af:agent/' || true)
     if [ -z "$EMAIL_READ_IMPORTS" ]; then
         echo "    ${GRN}(none)${RST}"
     else

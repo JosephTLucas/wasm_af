@@ -7,7 +7,7 @@ Fetches N URLs in parallel — each in its own WASM sandbox with per-instance ne
 URLS="https://example.com,https://httpbin.org" ./examples/fan-out-summarizer/run.sh
 ```
 
-Prerequisites: Rust, Go 1.25+, jq, `nats-server` (or `wash`). Optional: `nats` CLI for the live allowlist demo.
+Prerequisites: Rust (wasm32-wasip2 target), jq, `nats-server` (or `wash`). Optional: `nats` CLI for the live allowlist demo.
 
 ---
 
@@ -32,7 +32,7 @@ POST /tasks { type: "fan-out-summarizer", urls: "A,B,C" }
 
 Each url-fetch plugin's `allowed_hosts` is set to exactly one domain. The summarizer gets `llm_complete` but no HTTP capability. These are manifest-level constraints — not application checks.
 
-Two network enforcement layers address different threats: the server-side domain allowlist (NATS KV) gates task submission; per-instance `allowed_hosts` (Extism manifest) gates plugin HTTP at the wazero syscall layer. Live updates: `nats kv put wasm-af-config allowed-fetch-domains "domain1,domain2"`.
+Two network enforcement layers address different threats: the server-side domain allowlist (NATS KV) gates task submission; per-instance `allowed_hosts` (wasmtime `WasiHttpView`) gates plugin HTTP at the runtime syscall layer. Live updates: `nats kv put wasm-af-config allowed-fetch-domains "domain1,domain2"`.
 
 ## Files
 

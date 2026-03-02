@@ -1,5 +1,9 @@
-use agent_types::{TaskInput, TaskOutput};
-use extism_pdk::*;
+wit_bindgen::generate!({
+    world: "agent",
+    path: "../../../wit/agent.wit",
+});
+
+use waki::Client;
 
 #[derive(serde::Deserialize)]
 struct FetchRequest {
@@ -21,49 +25,54 @@ struct FetchResult {
 
 const SNIPPET_CHARS: usize = 2000;
 
-#[plugin_fn]
-pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
-    let req: FetchRequest = serde_json::from_str(&input.payload)
-        .map_err(|e| Error::msg(format!("payload parse error: {e}")))?;
+struct UrlFetchAgent;
 
-    if req.url.is_empty() {
-        return Err(Error::msg("url field is required").into());
+impl Guest for UrlFetchAgent {
+    fn execute(input: TaskInput) -> Result<TaskOutput, String> {
+        let req: FetchRequest = serde_json::from_str(&input.payload)
+            .map_err(|e| format!("payload parse error: {e}"))?;
+
+        if req.url.is_empty() {
+            return Err("url field is required".into());
+        }
+
+        let resp = Client::new()
+            .get(&req.url)
+            .header("User-Agent", "wasm-af-url-fetch/0.1")
+            .header("Accept", "text/html, text/plain, */*")
+            .send()
+            .map_err(|e| format!("fetch failed: {e}"))?;
+
+        let status = resp.status_code();
+        if !(200..300).contains(&status) {
+            return Err(format!("HTTP {status}"));
+        }
+
+        let body = resp.body().map_err(|e| format!("read body: {e}"))?;
+        let body_str = String::from_utf8_lossy(&body);
+        let title = extract_title(&body_str).unwrap_or_else(|| req.url.clone());
+        let snippet = truncate_chars(&body_str, SNIPPET_CHARS);
+
+        let output = FetchOutput {
+            query: req.url.clone(),
+            results: vec![FetchResult {
+                title,
+                url: req.url,
+                snippet,
+            }],
+        };
+
+        let payload = serde_json::to_string(&output)
+            .map_err(|e| format!("serialization error: {e}"))?;
+
+        Ok(TaskOutput {
+            payload,
+            metadata: vec![],
+        })
     }
-
-    let http_req = HttpRequest::new(&req.url)
-        .with_header("User-Agent", "wasm-af-url-fetch/0.1")
-        .with_header("Accept", "text/html, text/plain, */*");
-
-    let resp = http::request::<Vec<u8>>(&http_req, None)
-        .map_err(|e| Error::msg(format!("fetch failed: {e}")))?;
-
-    let status = resp.status_code();
-    if !(200..300).contains(&status) {
-        return Err(Error::msg(format!("HTTP {status}")).into());
-    }
-
-    let raw_body = resp.body();
-    let body = String::from_utf8_lossy(&raw_body);
-    let title = extract_title(&body).unwrap_or_else(|| req.url.clone());
-    let snippet = truncate_chars(&body, SNIPPET_CHARS);
-
-    let output = FetchOutput {
-        query: req.url.clone(),
-        results: vec![FetchResult {
-            title,
-            url: req.url,
-            snippet,
-        }],
-    };
-
-    let payload = serde_json::to_string(&output)
-        .map_err(|e| Error::msg(format!("serialization error: {e}")))?;
-
-    Ok(Json(TaskOutput {
-        payload,
-        metadata: vec![],
-    }))
 }
+
+export!(UrlFetchAgent);
 
 fn extract_title(html: &str) -> Option<String> {
     let lower = html.to_ascii_lowercase();

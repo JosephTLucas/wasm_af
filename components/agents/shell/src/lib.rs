@@ -1,5 +1,13 @@
-use agent_types::{TaskInput, TaskOutput};
-use extism_pdk::*;
+wit_bindgen::generate!({
+    world: "agent",
+    path: "../../../wit/agent.wit",
+});
+
+use wasm_af::agent::host_exec;
+
+struct ShellAgent;
+
+export!(ShellAgent);
 
 #[derive(serde::Deserialize)]
 struct ShellInput {
@@ -14,50 +22,32 @@ struct ShellOutput {
     exit_code: i32,
 }
 
-#[derive(serde::Serialize)]
-struct ExecRequest {
-    command: String,
-}
+impl Guest for ShellAgent {
+    fn execute(input: TaskInput) -> Result<TaskOutput, String> {
+        let req: ShellInput =
+            serde_json::from_str(&input.payload).map_err(|e| format!("payload parse error: {e}"))?;
 
-#[derive(serde::Deserialize)]
-struct ExecResponse {
-    stdout: String,
-    stderr: String,
-    exit_code: i32,
-}
+        if req.command.is_empty() {
+            return Err("command is required".to_string());
+        }
 
-#[host_fn]
-extern "ExtismHost" {
-    fn exec_command(input: Json<ExecRequest>) -> Json<ExecResponse>;
-}
-
-#[plugin_fn]
-pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
-    let req: ShellInput = serde_json::from_str(&input.payload)
-        .map_err(|e| Error::msg(format!("payload parse error: {e}")))?;
-
-    if req.command.is_empty() {
-        return Err(Error::msg("command is required").into());
-    }
-
-    let Json(resp) = unsafe {
-        exec_command(Json(ExecRequest {
+        let resp = host_exec::exec_command(&host_exec::ExecRequest {
             command: req.command,
-        }))
-        .map_err(|e| Error::msg(format!("exec_command error: {e}")))?
-    };
+            args: vec![],
+            working_dir: None,
+        })?;
 
-    let output = ShellOutput {
-        stdout: resp.stdout,
-        stderr: resp.stderr,
-        exit_code: resp.exit_code,
-    };
+        let output = ShellOutput {
+            stdout: resp.stdout,
+            stderr: resp.stderr,
+            exit_code: resp.exit_code,
+        };
 
-    let payload = serde_json::to_string(&output)
-        .map_err(|e| Error::msg(format!("serialization error: {e}")))?;
-
-    Ok(Json(TaskOutput {
-        payload,
-        metadata: vec![],
-    }))
+        let payload =
+            serde_json::to_string(&output).map_err(|e| format!("serialization error: {e}"))?;
+        Ok(TaskOutput {
+            payload,
+            metadata: vec![],
+        })
+    }
 }

@@ -7,7 +7,7 @@
 #   - physical capability isolation (missing imports, not advisory rules)
 #   - live allow-list enforcement (NATS KV update, no restart)
 #
-# Prerequisites: rust (with wasm32-unknown-unknown target), go, jq
+# Prerequisites: rust (with wasm32-wasip2 target), jq
 # Optional: nats-server OR wash CLI (for bundled NATS), nats CLI (for live KV demo)
 #
 # Usage:
@@ -54,13 +54,15 @@ echo ""
 # ── 1. Build ──────────────────────────────────────────────────────────────────
 echo "  [1/4] Building..."
 
-if ! rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-unknown; then
-    echo "        Adding wasm32-unknown-unknown target..."
-    rustup target add wasm32-unknown-unknown || die "Failed to add wasm32-unknown-unknown target."
+if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip2; then
+    echo "        Adding wasm32-wasip2 target..."
+    rustup target add wasm32-wasip2 || die "Failed to add wasm32-wasip2 target."
 fi
 
-(cd components && cargo build --release 2>&1) || die "Rust build failed."
-go build -o ./bin/orchestrator ./provider/orchestrator/ 2>&1 || die "Go build failed."
+(cd components && cargo build --release 2>&1) || die "Component build failed."
+mkdir -p ./bin
+cargo build --release -p wasm-af-orchestrator 2>&1 || die "Orchestrator build failed."
+cp target/release/orchestrator ./bin/orchestrator
 echo "        Done."
 echo ""
 
@@ -106,7 +108,7 @@ OPA_POLICY="$ROOT/examples/fan-out-summarizer" \
 OPA_DATA="$ROOT/examples/fan-out-summarizer/data.json" \
 AGENT_REGISTRY_FILE="$ROOT/examples/fan-out-summarizer/agents.json" \
 LLM_MODE=mock \
-WASM_DIR="$ROOT/components/target/wasm32-unknown-unknown/release" \
+WASM_DIR="$ROOT/components/target/wasm32-wasip2/release" \
     ./bin/orchestrator > /tmp/wasm-af-orchestrator.log 2>&1 &
 ORCH_PID=$!
 sleep 2
@@ -247,7 +249,7 @@ else
         echo ""
         STEP_ERR_LC=$(echo "$STEP_ERR" | tr '[:upper:]' '[:lower:]')
         if [ "$STEP_STATUS" = "failed" ] && ! echo "$STEP_ERR_LC" | grep -q "no rule permits"; then
-            echo "    ✓ Blocked by wazero allowed_hosts (not application code)."
+            echo "    ✓ Blocked by wasmtime allowed_hosts (not application code)."
         elif [ "$STEP_STATUS" = "denied" ] || echo "$STEP_ERR_LC" | grep -q "no rule permits"; then
             echo "    Denied by OPA before plugin instantiation."
         fi

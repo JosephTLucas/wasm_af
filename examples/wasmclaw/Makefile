@@ -26,18 +26,17 @@ pull-model: ## Ensure the Ollama model is pulled (does nothing if already presen
 	@ollama show "$(MODEL)" >/dev/null 2>&1 || \
 		(echo "Pulling $(MODEL) (this may take a few minutes)..." && ollama pull "$(MODEL)")
 
-build: ## Build wasmclaw WASM agents, orchestrator, and webhook-gateway
+build: ## Build WASM agent components + Rust orchestrator
 	@mkdir -p $(ROOT)/bin
-	@echo "Building Rust WASM agents (unknown-unknown)..."
-	@cd $(ROOT)/components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec -p email-send -p email-read -p web-search 2>&1
-	@echo "Building file-ops (wasm32-wasip1 → WASI filesystem)..."
-	@cd $(ROOT)/components && cargo build --release -p file-ops --target wasm32-wasip1 2>&1
-	@cp $(ROOT)/components/target/wasm32-wasip1/release/file_ops.wasm \
-		$(ROOT)/components/target/wasm32-unknown-unknown/release/file_ops.wasm
-	@echo "Building Go orchestrator..."
-	@go build -o $(ROOT)/bin/orchestrator $(ROOT)/provider/orchestrator/ 2>&1
-	@echo "Building Go webhook-gateway..."
-	@go build -o $(ROOT)/bin/webhook-gateway $(ROOT)/cmd/webhook-gateway/ 2>&1
+	@echo "Building WASM agent components (wasm32-wasip2)..."
+	@cd $(ROOT)/components && cargo build --release 2>&1
+	@echo "Building Rust orchestrator..."
+	@cd $(ROOT) && cargo build --release -p wasm-af-orchestrator 2>&1
+	@cp $(ROOT)/target/release/orchestrator $(ROOT)/bin/orchestrator
+	@if [ -d "$(ROOT)/cmd/webhook-gateway" ] && [ -f "$(ROOT)/go.mod" ] && command -v go >/dev/null 2>&1; then \
+		echo "Building Go webhook-gateway..."; \
+		cd $(ROOT) && go build -o $(ROOT)/bin/webhook-gateway ./cmd/webhook-gateway/ 2>&1; \
+	fi
 
 ##@ Test
 

@@ -1,0 +1,40 @@
+[package]
+name = "wasm-af-orchestrator"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "orchestrator"
+path = "src/main.rs"
+
+[dependencies]
+wasm-af-dag = { path = "../dag" }
+wasm-af-taskstate = { path = "../taskstate" }
+
+wasmtime = { version = "42", features = ["component-model"] }
+wasmtime-wasi = "42"
+wasmtime-wasi-http = { version = "42", features = ["default-send-request"] }
+http = "1"
+http-body-util = "0.1"
+hyper = "1"
+
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
+
+async-nats = "0.46"
+regorus = "0.9"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+thiserror = "2"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+url = "2"
+anyhow = "1"
+futures = "0.3"
+scopeguard = "1"
+tempfile = "3"

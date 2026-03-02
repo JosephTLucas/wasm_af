@@ -71,44 +71,47 @@ _lifecycle_lines() {
     local tid="$1"
     grep "$tid" /tmp/wasm-af-orchestrator.log 2>/dev/null \
         | jq -r --arg g "$GRN" --arg r "$RED" --arg y "$YLW" --arg d "$DIM" --arg R "$RST" --arg b "$BLD" \
-          'select(.msg == "starting step" or .msg == "plugin created" or .msg == "plugin destroyed" or .msg == "step completed" or .msg == "step denied" or .msg == "step awaiting approval" or .msg == "step approved" or .msg == "task parked, awaiting approval") |
-          if .msg == "starting step" then
-            "      \($d)\(.time[11:23])\($R)  \($b)▶\($R) \(.agent_type)"
-          elif .msg == "plugin created" then
-            "      \($d)\(.time[11:23])    ↳ wasm created  (host_fns: \(.host_fns), load: \(.create_ms)ms)\($R)"
-          elif .msg == "plugin destroyed" then
-            "      \($d)\(.time[11:23])    ↳ wasm destroyed (exec: \(.exec_ms)ms)\($R)"
-          elif .msg == "step denied" then
-            "      \($d)\(.time[11:23])\($R)  \($r)✗ \(.agent_type // "step") denied\($R)"
-          elif .msg == "step completed" then
-            "      \($d)\(.time[11:23])\($R)  \($g)✓ \(.agent_type)\($R)"
-          elif .msg == "step awaiting approval" then
-            "      \($d)\(.time[11:23])\($R)  \($y)⏸ \(.agent_type // "step") awaiting approval\($R) \($d)(\(.reason // ""))\($R)"
-          elif .msg == "step approved" then
-            "      \($d)\(.time[11:23])\($R)  \($g)✓ approved\($R) \($d)(by \(.approved_by // "unknown"))\($R)"
-          elif .msg == "task parked, awaiting approval" then
-            "      \($d)\(.time[11:23])    ↳ task parked — waiting for human decision\($R)"
+          '(.fields.message // .msg) as $m | (.timestamp // .time) as $t |
+          select($m == "starting step" or $m == "plugin created" or $m == "plugin destroyed" or $m == "step completed" or $m == "step denied" or $m == "step awaiting approval" or $m == "step approved" or $m == "task parked, awaiting approval" or $m == "task finished") |
+          (.fields.agent_type // .fields.agent // .agent_type // "") as $at |
+          if $m == "starting step" then
+            "      \($d)\($t[11:23])\($R)  \($b)▶\($R) \($at)"
+          elif $m == "plugin created" then
+            "      \($d)\($t[11:23])    ↳ wasm created  (host_fns: \(.fields.host_fns // .host_fns // 0), load: \(.fields.create_ms // .create_ms // 0)ms)\($R)"
+          elif $m == "plugin destroyed" then
+            "      \($d)\($t[11:23])    ↳ wasm destroyed (exec: \(.fields.exec_ms // .exec_ms // 0)ms)\($R)"
+          elif $m == "step denied" then
+            "      \($d)\($t[11:23])\($R)  \($r)✗ \($at) denied\($R)"
+          elif $m == "step completed" then
+            "      \($d)\($t[11:23])\($R)  \($g)✓ \($at)\($R)"
+          elif $m == "step awaiting approval" then
+            "      \($d)\($t[11:23])\($R)  \($y)⏸ \($at) awaiting approval\($R) \($d)(\(.fields.reason // .reason // ""))\($R)"
+          elif $m == "step approved" then
+            "      \($d)\($t[11:23])\($R)  \($g)✓ approved\($R) \($d)(by \(.fields.approved_by // .approved_by // "unknown"))\($R)"
+          elif $m == "task parked, awaiting approval" then
+            "      \($d)\($t[11:23])    ↳ task parked — waiting for human decision\($R)"
+          elif $m == "task finished" then
+            "      \($d)\($t[11:23])    ↳ task \(.fields.status // "done")\($R)"
           else empty end' 2>/dev/null || true
 }
 
 # ── 1. Build ──────────────────────────────────────────────────────────────────
 echo "  ${BLD}[1/4]${RST} Building..."
 
-if ! rustup target list --installed 2>/dev/null | grep -q wasm32-unknown-unknown; then
-    echo "        Adding wasm32-unknown-unknown target..."
-    rustup target add wasm32-unknown-unknown || die "Failed to add wasm32-unknown-unknown target."
-fi
-if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip1; then
-    echo "        Adding wasm32-wasip1 target..."
-    rustup target add wasm32-wasip1 || die "Failed to add wasm32-wasip1 target."
+if ! rustup target list --installed 2>/dev/null | grep -q wasm32-wasip2; then
+    echo "        Adding wasm32-wasip2 target..."
+    rustup target add wasm32-wasip2 || die "Failed to add wasm32-wasip2 target."
 fi
 
-(cd components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec -p email-send -p email-read -p web-search 2>&1) \
-    || die "Rust build failed (unknown-unknown agents)."
-(cd components && cargo build --release -p file-ops --target wasm32-wasip1 2>&1) \
-    || die "Rust build failed (file-ops)."
-cp components/target/wasm32-wasip1/release/file_ops.wasm \
-    components/target/wasm32-unknown-unknown/release/file_ops.wasm
+echo "        Building WASM agent components (wasm32-wasip2)..."
+(cd components && cargo build --release 2>&1) \
+    || die "Agent component build failed."
+
+echo "        Building Rust orchestrator..."
+cargo build --release -p wasm-af-orchestrator 2>&1 \
+    || die "Orchestrator build failed."
+mkdir -p ./bin
+cp "$ROOT/target/release/orchestrator" ./bin/orchestrator
 
 RUNTIMES_DIR="$ROOT/runtimes"
 if [ ! -f "$RUNTIMES_DIR/python.wasm" ]; then
@@ -117,8 +120,12 @@ if [ ! -f "$RUNTIMES_DIR/python.wasm" ]; then
         echo "        (sandbox runtime download failed — sandbox-exec will be disabled)"
 fi
 
-go build -o ./bin/orchestrator ./provider/orchestrator/ 2>&1 || die "Go orchestrator build failed."
-go build -o ./bin/webhook-gateway ./cmd/webhook-gateway/ 2>&1 || die "Go gateway build failed."
+if [ -d "$ROOT/cmd/webhook-gateway" ] && [ -f "$ROOT/go.mod" ] && command -v go >/dev/null 2>&1; then
+    echo "        Building Go webhook-gateway..."
+    go build -o ./bin/webhook-gateway ./cmd/webhook-gateway/ 2>&1 || \
+        echo "        (webhook-gateway build skipped)"
+fi
+
 echo "        ${GRN}Done.${RST}"
 echo ""
 
@@ -216,7 +223,7 @@ LLM_MODEL="$_LLM_MODEL" \
 LLM_TEMPERATURE="$_LLM_TEMPERATURE" \
 LLM_TOP_P="$_LLM_TOP_P" \
 PLUGIN_TIMEOUT_SEC="$_PLUGIN_TIMEOUT" \
-WASM_DIR="$ROOT/components/target/wasm32-unknown-unknown/release" \
+WASM_DIR="$ROOT/components/target/wasm32-wasip2/release" \
 SANDBOX_RUNTIMES_DIR="$ROOT/runtimes" \
 SANDBOX_ALLOWED_PATHS="/tmp/wasmclaw" \
     ./bin/orchestrator > /tmp/wasm-af-orchestrator.log 2>&1 &
@@ -229,21 +236,23 @@ if ! curl -sf http://localhost:8080/healthz >/dev/null 2>&1; then
 fi
 echo "        ${GRN}Orchestrator running${RST} ${DIM}(LLM: $LLM_LABEL)${RST}"
 
-if lsof -ti:8081 >/dev/null 2>&1; then
-    echo "        Stopping stale process on :8081..."
-    lsof -ti:8081 | xargs kill 2>/dev/null || true
+if [ -x ./bin/webhook-gateway ]; then
+    if lsof -ti:8081 >/dev/null 2>&1; then
+        echo "        Stopping stale process on :8081..."
+        lsof -ti:8081 | xargs kill 2>/dev/null || true
+        sleep 1
+    fi
+
+    ORCHESTRATOR_URL=http://localhost:8080 \
+    LISTEN_ADDR=:8081 \
+        ./bin/webhook-gateway > /tmp/wasm-af-gateway.log 2>&1 &
+    GW_PID=$!
     sleep 1
-fi
 
-ORCHESTRATOR_URL=http://localhost:8080 \
-LISTEN_ADDR=:8081 \
-    ./bin/webhook-gateway > /tmp/wasm-af-gateway.log 2>&1 &
-GW_PID=$!
-sleep 1
-
-if ! curl -sf http://localhost:8081/healthz >/dev/null 2>&1; then
-    cat /tmp/wasm-af-gateway.log
-    die "Webhook gateway failed to start."
+    if ! curl -sf http://localhost:8081/healthz >/dev/null 2>&1; then
+        cat /tmp/wasm-af-gateway.log
+        die "Webhook gateway failed to start."
+    fi
+    echo "        ${GRN}Webhook gateway running${RST} ${DIM}(PID $GW_PID)${RST}"
 fi
-echo "        ${GRN}Webhook gateway running${RST} ${DIM}(PID $GW_PID)${RST}"
 echo ""

@@ -1,153 +1,78 @@
-use agent_types::{LlmMessage, LlmRequest, LlmResponse, TaskInput, TaskOutput};
-use extism_pdk::*;
+wit_bindgen::generate!({
+    world: "agent",
+    path: "../../../wit/agent.wit",
+});
+
+use wasm_af::agent::host_llm;
+
+struct SummarizerAgent;
+
+export!(SummarizerAgent);
 
 #[derive(serde::Deserialize)]
 struct SummarizerInput {
     #[serde(default)]
-    query: Option<String>,
+    query: String,
     #[serde(default)]
-    model: Option<String>,
+    model: String,
     #[serde(default)]
     max_tokens: Option<u32>,
-}
-
-#[derive(serde::Deserialize)]
-struct SearchOutput {
-    query: String,
-    results: Vec<SearchResult>,
-}
-
-#[derive(serde::Deserialize)]
-struct SearchResult {
-    title: String,
-    url: String,
-    snippet: String,
 }
 
 #[derive(serde::Serialize)]
 struct SummaryOutput {
     summary: String,
-    source_query: String,
-    source_count: usize,
+    model_used: String,
 }
 
-#[host_fn]
-extern "ExtismHost" {
-    fn llm_complete(input: Json<LlmRequest>) -> Json<LlmResponse>;
-}
+impl Guest for SummarizerAgent {
+    fn execute(input: TaskInput) -> Result<TaskOutput, String> {
+        let req: SummarizerInput =
+            serde_json::from_str(&input.payload).map_err(|e| format!("payload parse error: {e}"))?;
 
-const CONTEXT_KEY_WEB_SEARCH: &str = "web_search_results";
-const DEFAULT_MAX_TOKENS: u32 = 512;
-
-#[plugin_fn]
-pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
-    let req: SummarizerInput = serde_json::from_str(&input.payload)
-        .map_err(|e| Error::msg(format!("payload parse error: {e}")))?;
-
-    let search_json = input
-        .context
-        .iter()
-        .find(|kv| kv.key == CONTEXT_KEY_WEB_SEARCH)
-        .map(|kv| kv.val.as_str())
-        .ok_or_else(|| {
-            Error::msg(format!(
-                "context key '{CONTEXT_KEY_WEB_SEARCH}' not found; \
-                 web-search step must run before summarizer"
-            ))
-        })?;
-
-    // Handle both single SearchOutput and array-of-SearchOutput (generic merge).
-    let search: SearchOutput = match serde_json::from_str::<SearchOutput>(search_json) {
-        Ok(s) => s,
-        Err(_) => {
-            let items: Vec<SearchOutput> = serde_json::from_str(search_json)
-                .map_err(|e| Error::msg(format!("web_search_results parse error: {e}")))?;
-            let mut merged = SearchOutput {
-                query: String::new(),
-                results: Vec::new(),
-            };
-            let mut queries = Vec::new();
-            for item in items {
-                queries.push(item.query);
-                merged.results.extend(item.results);
-            }
-            merged.query = queries.join(" | ");
-            merged
+        let mut context_parts = Vec::new();
+        for kv in &input.context {
+            context_parts.push(format!("[{}]\n{}", kv.key, kv.val));
         }
-    };
 
-    if search.results.is_empty() {
-        let payload = serde_json::to_string(&SummaryOutput {
-            summary: "No search results were found for this query.".to_string(),
-            source_query: search.query,
-            source_count: 0,
-        })?;
-        return Ok(Json(TaskOutput {
+        let user_content = if context_parts.is_empty() {
+            format!("Please provide a summary about: {}", req.query)
+        } else {
+            format!(
+                "Summarize the following information about \"{}\":\n\n{}",
+                req.query,
+                context_parts.join("\n\n")
+            )
+        };
+
+        let llm_req = host_llm::LlmRequest {
+            model: req.model,
+            messages: vec![
+                host_llm::LlmMessage {
+                    role: "system".to_string(),
+                    content: "You are a concise summarizer. Distill the key points.".to_string(),
+                },
+                host_llm::LlmMessage {
+                    role: "user".to_string(),
+                    content: user_content,
+                },
+            ],
+            max_tokens: req.max_tokens.unwrap_or(512),
+            temperature: Some(0.3),
+        };
+
+        let resp = host_llm::llm_complete(&llm_req)?;
+
+        let output = SummaryOutput {
+            summary: resp.content,
+            model_used: resp.model_used,
+        };
+
+        let payload =
+            serde_json::to_string(&output).map_err(|e| format!("serialization error: {e}"))?;
+        Ok(TaskOutput {
             payload,
             metadata: vec![],
-        }));
-    }
-
-    let query_label = req.query.as_deref().unwrap_or(search.query.as_str());
-
-    let source_count = search.results.len();
-    let sources_text = search
-        .results
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            format!(
-                "[{}] {}\n    URL: {}\n    {}",
-                i + 1,
-                r.title,
-                r.url,
-                r.snippet
-            )
         })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-
-    let user_message = format!(
-        "Please provide a concise, accurate summary of the following \
-         web search results for the query: \"{query_label}\"\n\n\
-         Search results:\n{sources_text}\n\n\
-         Write a clear, factual summary in 2-4 paragraphs. \
-         Cite sources by their bracketed number where relevant."
-    );
-
-    let llm_req = LlmRequest {
-        model: req.model.unwrap_or_default(),
-        messages: vec![
-            LlmMessage {
-                role: "system".to_string(),
-                content: "You are a research assistant. Summarize web search results \
-                          accurately and concisely, citing sources."
-                    .to_string(),
-            },
-            LlmMessage {
-                role: "user".to_string(),
-                content: user_message,
-            },
-        ],
-        max_tokens: req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
-        temperature: Some(0.3),
-    };
-
-    let Json(llm_resp) = unsafe {
-        llm_complete(Json(llm_req)).map_err(|e| Error::msg(format!("LLM inference error: {e}")))?
-    };
-
-    let output = SummaryOutput {
-        summary: llm_resp.content,
-        source_query: search.query,
-        source_count,
-    };
-
-    let payload = serde_json::to_string(&output)
-        .map_err(|e| Error::msg(format!("serialization error: {e}")))?;
-
-    Ok(Json(TaskOutput {
-        payload,
-        metadata: vec![],
-    }))
+    }
 }

@@ -1,22 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "agent-types",
+    "agents/file-ops",
+    "agents/url-fetch",
     "agents/web-search",
     "agents/summarizer",
-    "agents/url-fetch",
     "agents/router",
     "agents/shell",
-    "agents/file-ops",
     "agents/memory",
     "agents/responder",
     "agents/sandbox-exec",
     "agents/email-send",
     "agents/email-read",
 ]
-
-[profile.release]
-opt-level = "s"
-lto = true
-codegen-units = 1
-strip = true

@@ -10,7 +10,7 @@ LLM_MODE=real make demo                # local Ollama
 
 For API inference, set `NV_API_KEY` in `.env` at the repo root. Default model: `nvdev/nvidia/llama-3.3-nemotron-super-49b-v1` (override with `NV_MODEL`).
 
-Prerequisites: Rust (wasm32-unknown-unknown + wasm32-wasip1), Go 1.25+, jq, `nats-server`. Optional: `opa`, `wasm-tools`.
+Prerequisites: Rust (wasm32-wasip2 target), jq, `nats-server`. Optional: `opa`, `wasm-tools`, Go (for webhook-gateway).
 
 ---
 
