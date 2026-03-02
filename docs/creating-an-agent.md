@@ -158,6 +158,8 @@ Field reference:
 Add allow rules in your example's `policy.rego`:
 
 ```rego
+import rego.v1
+
 allow if {
     input.step.agent_type == "my-agent"
     input.agent.capability == "custom"
@@ -179,6 +181,8 @@ allowed_hosts := ["api.example.com"] if {
 Write corresponding tests in `policy_test.rego`:
 
 ```rego
+import rego.v1
+
 test_my_agent_allowed if {
     allow with input as {
         "step": {"agent_type": "my-agent", "params": {}},
@@ -232,7 +236,7 @@ curl -X POST localhost:8080/agents \
 
 The orchestrator will:
 1. Validate the binary (instantiate with zero capabilities, check that `execute` exists).
-2. Write it to `WASM_DIR`.
+2. Write it to `WASM_DIR/external/`.
 3. Register it with `capability: "untrusted"`, `host_functions: []`, `external: true`.
 
 The name must match `[A-Za-z0-9_-]+` and must not collide with a platform agent.

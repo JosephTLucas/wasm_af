@@ -1,5 +1,7 @@
 package wasm_af.authz
 
+import rego.v1
+
 test_url_fetch_allowed_domain if {
 	allow with input as {
 		"step": {"agent_type": "url-fetch", "domain": "webassembly.org"},

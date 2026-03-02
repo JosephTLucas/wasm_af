@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	nats "github.com/nats-io/nats.go"
 	natsjetstream "github.com/nats-io/nats.go/jetstream"
@@ -36,21 +37,33 @@ type kvPutResponse struct {
 // bucket handle is created once and captured in the closures. Register each
 // provider under its own name in the HostFnRegistry.
 func NewMemoryHostFnProviders(nc *nats.Conn, logger *slog.Logger) (getProvider, putProvider HostFnProvider) {
-	kv, err := initMemoryBucket(context.Background(), nc)
-	if err != nil {
-		logger.Error("memory host fns: failed to init bucket (will retry per-call)", "err", err)
-	}
+	var (
+		kvOnce   sync.Once
+		kvBucket natsjetstream.KeyValue
+		kvInitOK bool
+	)
 
 	resolveKV := func(ctx context.Context) (natsjetstream.KeyValue, error) {
-		if kv != nil {
-			return kv, nil
+		kvOnce.Do(func() {
+			var err error
+			kvBucket, err = initMemoryBucket(ctx, nc)
+			if err != nil {
+				logger.Error("memory host fns: failed to init bucket", "err", err)
+				return
+			}
+			kvInitOK = true
+		})
+		if kvInitOK {
+			return kvBucket, nil
 		}
+		// First init failed; retry (sync.Once won't re-run, so do it directly).
 		bucket, err := initMemoryBucket(ctx, nc)
 		if err != nil {
 			return nil, err
 		}
-		kv = bucket
-		return kv, nil
+		kvBucket = bucket
+		kvInitOK = true
+		return kvBucket, nil
 	}
 
 	getProvider = func(_ *Orchestrator) []extism.HostFunction {
@@ -139,31 +152,52 @@ func initMemoryBucket(ctx context.Context, nc *nats.Conn) (natsjetstream.KeyValu
 
 type kvResolver func(ctx context.Context) (natsjetstream.KeyValue, error)
 
+// scopedKey prefixes a key with the agent type from the step context,
+// enforcing per-agent-type namespace isolation in the shared KV bucket.
+func scopedKey(ctx context.Context, key string) string {
+	if meta, ok := stepMetaFrom(ctx); ok && meta.AgentType != "" {
+		return meta.AgentType + ":" + key
+	}
+	return key
+}
+
 func doKvGet(ctx context.Context, resolve kvResolver, key string, logger *slog.Logger) kvGetResponse {
+	if meta, ok := stepMetaFrom(ctx); ok {
+		logger.Info("kv_get", "key", key,
+			"task_id", meta.TaskID, "step_id", meta.StepID, "agent_type", meta.AgentType)
+	}
+
+	scopedK := scopedKey(ctx, key)
 	bucket, err := resolve(ctx)
 	if err != nil {
 		logger.Error("kv_get: bucket", "err", err)
 		return kvGetResponse{}
 	}
-	entry, err := bucket.Get(ctx, key)
+	entry, err := bucket.Get(ctx, scopedK)
 	if err != nil {
 		if errors.Is(err, natsjetstream.ErrKeyNotFound) {
 			return kvGetResponse{Found: false}
 		}
-		logger.Error("kv_get: get", "key", key, "err", err)
+		logger.Error("kv_get: get", "key", scopedK, "err", err)
 		return kvGetResponse{}
 	}
 	return kvGetResponse{Value: string(entry.Value()), Found: true}
 }
 
 func doKvPut(ctx context.Context, resolve kvResolver, key, value string, logger *slog.Logger) kvPutResponse {
+	if meta, ok := stepMetaFrom(ctx); ok {
+		logger.Info("kv_put", "key", key,
+			"task_id", meta.TaskID, "step_id", meta.StepID, "agent_type", meta.AgentType)
+	}
+
+	scopedK := scopedKey(ctx, key)
 	bucket, err := resolve(ctx)
 	if err != nil {
 		logger.Error("kv_put: bucket", "err", err)
 		return kvPutResponse{}
 	}
-	if _, err := bucket.Put(ctx, key, []byte(value)); err != nil {
-		logger.Error("kv_put: put", "key", key, "err", err)
+	if _, err := bucket.Put(ctx, scopedK, []byte(value)); err != nil {
+		logger.Error("kv_put: put", "key", scopedK, "err", err)
 		return kvPutResponse{}
 	}
 	return kvPutResponse{Success: true}

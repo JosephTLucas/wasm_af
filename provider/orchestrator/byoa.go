@@ -89,7 +89,13 @@ func (o *Orchestrator) handleRegisterAgent(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	destPath := filepath.Join(o.wasmDir, req.Name+".wasm")
+	extDir := filepath.Join(o.wasmDir, "external")
+	if err := os.MkdirAll(extDir, 0o755); err != nil {
+		o.logger.Error("failed to create external agent directory", "path", extDir, "err", err)
+		http.Error(w, "internal error creating directory", http.StatusInternalServerError)
+		return
+	}
+	destPath := filepath.Join(extDir, req.Name+".wasm")
 	if err := os.WriteFile(destPath, wasmBytes, 0o644); err != nil {
 		o.logger.Error("failed to write WASM file", "path", destPath, "err", err)
 		http.Error(w, "internal error writing WASM file", http.StatusInternalServerError)
@@ -143,7 +149,7 @@ func (o *Orchestrator) handleRemoveAgent(w http.ResponseWriter, r *http.Request)
 
 	o.registry.Remove(name)
 
-	wasmPath := filepath.Join(o.wasmDir, meta.WasmName+".wasm")
+	wasmPath := filepath.Join(o.wasmDir, "external", meta.WasmName+".wasm")
 	if err := os.Remove(wasmPath); err != nil && !os.IsNotExist(err) {
 		o.logger.Error("failed to remove WASM file", "path", wasmPath, "err", err)
 	}

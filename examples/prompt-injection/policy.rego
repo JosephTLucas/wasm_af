@@ -1,5 +1,7 @@
 package wasm_af.authz
 
+import rego.v1
+
 default allow := false
 
 # Only url-fetch and summarizer are permitted — web-search is deliberately

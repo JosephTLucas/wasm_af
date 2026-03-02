@@ -237,6 +237,7 @@ type taskStateView struct {
 	Error   string            `json:"error,omitempty"`
 	Plan    []planStepView    `json:"plan"`
 	Results map[string]string `json:"results"`
+	Context map[string]string `json:"context,omitempty"`
 }
 
 type planStepView struct {
@@ -244,25 +245,34 @@ type planStepView struct {
 	OutputKey string `json:"output_key"`
 }
 
-// extractResponse finds the responder step output and extracts the response text.
+// extractResponse reads the task result. It first checks context["result_key"]
+// (set by plan builders), then falls back to scanning for a "responder" step.
 func extractResponse(state taskStateView) string {
+	if rk := state.Context["result_key"]; rk != "" {
+		if payload, ok := state.Results[rk]; ok {
+			return extractPayloadText(payload)
+		}
+	}
+
 	for _, step := range state.Plan {
 		if step.AgentType != "responder" {
 			continue
 		}
-		payload, ok := state.Results[step.OutputKey]
-		if !ok {
-			continue
+		if payload, ok := state.Results[step.OutputKey]; ok {
+			return extractPayloadText(payload)
 		}
-		var out struct {
-			Response string `json:"response"`
-		}
-		if err := json.Unmarshal([]byte(payload), &out); err == nil && out.Response != "" {
-			return out.Response
-		}
-		return payload
 	}
 	return "(no response)"
+}
+
+func extractPayloadText(payload string) string {
+	var out struct {
+		Response string `json:"response"`
+	}
+	if err := json.Unmarshal([]byte(payload), &out); err == nil && out.Response != "" {
+		return out.Response
+	}
+	return payload
 }
 
 func envOr(key, fallback string) string {

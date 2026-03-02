@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	extism "github.com/extism/go-sdk"
@@ -42,6 +44,10 @@ type Orchestrator struct {
 	configKV            natsjetstream.KeyValue
 	approvalWebhookURL  string
 	approvalTimeoutSec  int
+
+	// runningTasks tracks task IDs with an active runTask goroutine to
+	// prevent overlapping executions from approval/rejection/timeout handlers.
+	runningTasks sync.Map
 }
 
 // TaskInput is the JSON structure passed to every agent plugin.
@@ -97,7 +103,28 @@ type PluginOpts struct {
 
 var wasmNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// StepMeta carries per-step identity for host functions via context.Context.
+// Host functions read this to scope operations and produce audit-quality logs.
+type StepMeta struct {
+	TaskID    string
+	StepID    string
+	AgentType string
+}
+
+type stepMetaKey struct{}
+
+func withStepMeta(ctx context.Context, m StepMeta) context.Context {
+	return context.WithValue(ctx, stepMetaKey{}, m)
+}
+
+func stepMetaFrom(ctx context.Context) (StepMeta, bool) {
+	m, ok := ctx.Value(stepMetaKey{}).(StepMeta)
+	return m, ok
+}
+
 // wasmPath returns the absolute path to a compiled .wasm plugin.
+// It checks the base wasm directory first, then the external/ subdirectory
+// (used for BYOA-uploaded agents) as a fallback.
 func (o *Orchestrator) wasmPath(name string) (string, error) {
 	if !wasmNameRE.MatchString(name) {
 		return "", fmt.Errorf("invalid wasm name %q", name)
@@ -107,15 +134,24 @@ func (o *Orchestrator) wasmPath(name string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve wasm dir: %w", err)
 	}
-	wasmPath := filepath.Join(baseDir, name+".wasm")
-	rel, err := filepath.Rel(baseDir, wasmPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve relative wasm path: %w", err)
+
+	candidates := []string{
+		filepath.Join(baseDir, name+".wasm"),
+		filepath.Join(baseDir, "external", name+".wasm"),
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("wasm path escapes configured wasm dir")
+	for _, wp := range candidates {
+		rel, err := filepath.Rel(baseDir, wp)
+		if err != nil {
+			continue
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("wasm path escapes configured wasm dir")
+		}
+		if _, statErr := os.Stat(wp); statErr == nil {
+			return wp, nil
+		}
 	}
-	return wasmPath, nil
+	return candidates[0], nil
 }
 
 // sanitizeAllowedPaths validates and normalizes policy-supplied host->guest path

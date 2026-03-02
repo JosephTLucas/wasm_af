@@ -57,6 +57,12 @@ func stepIndex(plan []taskstate.Step, id string) int {
 func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 	log := o.logger.With("task_id", taskID)
 
+	if _, loaded := o.runningTasks.LoadOrStore(taskID, true); loaded {
+		log.Info("runTask already active for this task, skipping")
+		return
+	}
+	defer o.runningTasks.Delete(taskID)
+
 	if err := o.store.Update(ctx, taskID, func(s *taskstate.TaskState) error {
 		s.Status = taskstate.StatusRunning
 		return nil
@@ -144,6 +150,14 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 			return
 		}
 
+		// Rebuild DAG from reloaded state for accurate child lookups.
+		spliceG, spliceErr := buildDAG(state.Plan)
+		if spliceErr != nil {
+			log.Error("invalid plan DAG for splice", "err", spliceErr)
+			o.failTask(ctx, taskID, fmt.Sprintf("invalid plan DAG: %v", spliceErr))
+			return
+		}
+
 		// Handle splices for any splice-flagged steps that just completed.
 		for _, id := range dispatchable {
 			idx := stepIndex(state.Plan, id)
@@ -159,7 +173,7 @@ func (o *Orchestrator) runTask(ctx context.Context, taskID string) {
 				continue
 			}
 			spliceCounter++
-			if spliceErr := o.handleSplice(ctx, state, g, step, spliceCounter); spliceErr != nil {
+			if spliceErr := o.handleSplice(ctx, state, spliceG, step, spliceCounter); spliceErr != nil {
 				log.Warn("splice failed, continuing without skill step", "step_id", step.ID, "err", spliceErr)
 			}
 		}
@@ -438,6 +452,12 @@ func (o *Orchestrator) runStep(ctx context.Context, state *taskstate.TaskState, 
 	if err := o.store.PutPayload(ctx, step.InputKey, inputPayload); err != nil {
 		return fmt.Errorf("write input payload: %w", err)
 	}
+
+	ctx = withStepMeta(ctx, StepMeta{
+		TaskID:    taskID,
+		StepID:    step.ID,
+		AgentType: step.AgentType,
+	})
 
 	output, err := o.invokeAgent(ctx, meta.WasmName, input, opts)
 	if err != nil {

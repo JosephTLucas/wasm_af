@@ -32,9 +32,11 @@ func testOrchestrator(store taskstate.TaskStore) *Orchestrator {
 
 	modules := map[string]string{
 		"authz.rego": `package wasm_af.authz
+import rego.v1
 default allow := true
 `,
 		"submit.rego": `package wasm_af.submit
+import rego.v1
 default allow := true
 `,
 	}
@@ -47,7 +49,7 @@ default allow := true
 		policy:               policy,
 		registry:             reg,
 		builders:             builders,
-		hostFns:              NewHostFnRegistry(),
+		hostFns:              NewHostFnRegistry(logger),
 		ctx:                  context.Background(),
 		pluginTimeout:        30 * time.Second,
 		pluginMaxMemoryPages: 256,
@@ -226,9 +228,11 @@ func TestHandleSubmitTask_PolicyDeny(t *testing.T) {
 
 	modules := map[string]string{
 		"authz.rego": `package wasm_af.authz
+import rego.v1
 default allow := true
 `,
 		"submit.rego": `package wasm_af.submit
+import rego.v1
 default allow := false
 deny_message := "not allowed"
 `,
@@ -241,7 +245,7 @@ deny_message := "not allowed"
 		policy:   policy,
 		registry: &AgentRegistry{agents: map[string]*AgentMeta{}},
 		builders: NewPlanBuilderRegistry(),
-		hostFns:  NewHostFnRegistry(),
+		hostFns:  NewHostFnRegistry(logger),
 		ctx:      context.Background(),
 	}
 

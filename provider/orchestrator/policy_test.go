@@ -2,12 +2,18 @@ package main
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
 
 	extism "github.com/extism/go-sdk"
 )
 
+var testLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
 const testStepPolicy = `package wasm_af.authz
+
+import rego.v1
 
 default allow := false
 
@@ -59,6 +65,8 @@ deny_message := msg if {
 `
 
 const testSubmitPolicy = `package wasm_af.submit
+
+import rego.v1
 
 default allow := false
 
@@ -318,12 +326,15 @@ func TestOPA_DenyUnknownAgent(t *testing.T) {
 
 func TestOPA_LoadExamplePolicies(t *testing.T) {
 	examples := []struct {
-		name     string
-		dir      string
-		dataFile string
+		name       string
+		dir        string
+		dataFile   string
+		allowAgent string
+		allowCap   string
 	}{
-		{"fan-out-summarizer", "../../examples/fan-out-summarizer", "../../examples/fan-out-summarizer/data.json"},
-		{"prompt-injection", "../../examples/prompt-injection", "../../examples/prompt-injection/data.json"},
+		{"fan-out-summarizer", "../../examples/fan-out-summarizer", "../../examples/fan-out-summarizer/data.json", "summarizer", "llm"},
+		{"prompt-injection", "../../examples/prompt-injection", "../../examples/prompt-injection/data.json", "summarizer", "llm"},
+		{"wasmclaw", "../../examples/wasmclaw", "../../examples/wasmclaw/data.json", "router", "llm"},
 	}
 	for _, ex := range examples {
 		t.Run(ex.name, func(t *testing.T) {
@@ -340,12 +351,12 @@ func TestOPA_LoadExamplePolicies(t *testing.T) {
 				t.Fatalf("NewOPAEvaluator: %v", err)
 			}
 
-			r, err := e.EvaluateStep(context.Background(), stepInput("summarizer", "llm", ""))
+			r, err := e.EvaluateStep(context.Background(), stepInput(ex.allowAgent, ex.allowCap, ""))
 			if err != nil {
 				t.Fatalf("EvaluateStep: %v", err)
 			}
 			if !r.Permitted {
-				t.Error("expected summarizer/llm to be permitted")
+				t.Errorf("expected %s/%s to be permitted", ex.allowAgent, ex.allowCap)
 			}
 
 			r, err = e.EvaluateStep(context.Background(), stepInput("evil", "http", "webassembly.org"))
@@ -360,7 +371,7 @@ func TestOPA_LoadExamplePolicies(t *testing.T) {
 }
 
 func TestHostFnRegistry_Resolve(t *testing.T) {
-	reg := NewHostFnRegistry()
+	reg := NewHostFnRegistry(testLogger)
 	called := false
 	reg.Register("test_fn", func(_ *Orchestrator) []extism.HostFunction {
 		called = true
@@ -380,7 +391,7 @@ func TestHostFnRegistry_Resolve(t *testing.T) {
 }
 
 func TestHostFnRegistry_Empty(t *testing.T) {
-	reg := NewHostFnRegistry()
+	reg := NewHostFnRegistry(testLogger)
 	fns := reg.Resolve([]string{"anything"}, nil)
 	if len(fns) != 0 {
 		t.Errorf("expected empty, got %d", len(fns))

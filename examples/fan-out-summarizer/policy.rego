@@ -1,5 +1,7 @@
 package wasm_af.authz
 
+import rego.v1
+
 default allow := false
 
 # url-fetch: allow only if the target domain is in the data-driven allowlist

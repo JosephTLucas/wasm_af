@@ -360,12 +360,6 @@ The `run.sh` scripts map convenience variables to the orchestrator's LLM config:
 
 ---
 
-## Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for the development roadmap.
-
----
-
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).

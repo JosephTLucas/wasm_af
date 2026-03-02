@@ -46,6 +46,8 @@ func (ChatBuilder) BuildPlan(taskID string, ctx map[string]string, _ *AgentRegis
 	responderID := stepID(taskID, 3)
 	memAppendID := stepID(taskID, 4)
 
+	ctx["result_key"] = responderID + ".output"
+
 	return []taskstate.Step{
 		{
 			ID:        memGetID,

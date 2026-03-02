@@ -78,7 +78,7 @@ func run(logger *slog.Logger) error {
 	planBuilders.Register("skill-demo", SkillDemoBuilder{})
 
 	// ── HOST FUNCTION REGISTRY ──────────────────────────────────────────────
-	hostFns := NewHostFnRegistry()
+	hostFns := NewHostFnRegistry(logger)
 
 	llmTimeoutSec := envOrInt("LLM_TIMEOUT_SEC", 120)
 	llmCfg := LLMConfig{
@@ -234,6 +234,16 @@ func run(logger *slog.Logger) error {
 	}
 	if approvalTimeoutSec > 0 {
 		logger.Info("approval timeout configured", "timeout_sec", approvalTimeoutSec)
+	}
+
+	// Validate that agent registry host_functions reference registered providers.
+	for name, meta := range registry.List() {
+		for _, hf := range meta.HostFunctions {
+			if !hostFns.Has(hf) {
+				logger.Warn("agent references unregistered host function",
+					"agent", name, "host_function", hf)
+			}
+		}
 	}
 
 	// Synchronously load the current allowlist from NATS KV into OPA data store.

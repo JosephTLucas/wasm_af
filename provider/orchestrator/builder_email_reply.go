@@ -24,6 +24,8 @@ func (EmailReplyBuilder) BuildPlan(taskID string, ctx map[string]string, _ *Agen
 	responderID := stepID(taskID, 2)
 	sendID := stepID(taskID, 3)
 
+	ctx["result_key"] = sendID + ".output"
+
 	return []taskstate.Step{
 		{
 			ID:        readID,
@@ -95,7 +97,6 @@ func (ReplyAllBuilder) BuildPlan(taskID string, ctx map[string]string, _ *AgentR
 		},
 	}
 
-	stepNum := 2
 	for i := 0; i < emailCount; i++ {
 		idx := strconv.Itoa(i)
 		respID := fmt.Sprintf("%s-respond-%d", taskID, i)
@@ -124,7 +125,6 @@ func (ReplyAllBuilder) BuildPlan(taskID string, ctx map[string]string, _ *AgentR
 				"body":    ctx[fmt.Sprintf("reply_body_%d", i)],
 			},
 		})
-		stepNum += 2
 	}
 
 	return steps, nil

@@ -51,6 +51,7 @@ requires_approval if { input.step.agent_type == "email-send" }
 approval_reason := "email requires human approval" if { input.step.agent_type == "email-send" }
 `,
 		"submit.rego": `package wasm_af.submit
+import rego.v1
 default allow := true
 `,
 	}
@@ -63,7 +64,7 @@ default allow := true
 		policy:               policy,
 		registry:             reg,
 		builders:             builders,
-		hostFns:              NewHostFnRegistry(),
+		hostFns:              NewHostFnRegistry(logger),
 		ctx:                  context.Background(),
 		pluginTimeout:        30 * time.Second,
 		pluginMaxMemoryPages: 256,

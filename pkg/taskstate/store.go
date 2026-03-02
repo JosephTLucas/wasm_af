@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -40,6 +41,7 @@ type Store struct {
 	tasks    jetstream.KeyValue
 	audit    jetstream.KeyValue
 	payloads jetstream.KeyValue
+	auditSeq atomic.Uint64
 }
 
 // compile-time assertion
@@ -159,7 +161,8 @@ func (s *Store) AppendAudit(ctx context.Context, event *AuditEvent) error {
 	if err != nil {
 		return fmt.Errorf("marshal audit: %w", err)
 	}
-	key := fmt.Sprintf("%s.%d", event.TaskID, event.Timestamp.UnixNano())
+	seq := s.auditSeq.Add(1)
+	key := fmt.Sprintf("%s.%d.%d", event.TaskID, event.Timestamp.UnixNano(), seq)
 	_, err = s.audit.Put(ctx, key, b)
 	return err
 }

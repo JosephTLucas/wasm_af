@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -186,7 +187,7 @@ func (e *SandboxEngine) Exec(ctx context.Context, req sandboxExecRequest, allowe
 	exitCode := 0
 	if err != nil {
 		var exitErr *sys.ExitError
-		if ok := errorAs(err, &exitErr); ok {
+		if errors.As(err, &exitErr) {
 			exitCode = int(exitErr.ExitCode())
 		} else {
 			exitCode = -1
@@ -211,24 +212,6 @@ func languageExtension(lang string) string {
 		return ext
 	}
 	return ""
-}
-
-// errorAs is a thin wrapper so the linter doesn't complain about
-// errors.As with a concrete type; sys.ExitError is a Wazero convention.
-func errorAs(err error, target **sys.ExitError) bool {
-	for err != nil {
-		if e, ok := err.(*sys.ExitError); ok {
-			*target = e
-			return true
-		}
-		// Unwrap if possible.
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
-	}
-	return false
 }
 
 // NewSandboxHostFnProvider returns a HostFnProvider that injects the

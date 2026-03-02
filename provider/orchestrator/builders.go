@@ -52,9 +52,12 @@ func stepID(taskID string, n int) string {
 // ResearchBuilder creates a two-step plan: web-search → summarizer.
 type ResearchBuilder struct{}
 
-func (ResearchBuilder) BuildPlan(taskID string, _ map[string]string, _ *AgentRegistry, _ *Orchestrator) ([]taskstate.Step, error) {
+func (ResearchBuilder) BuildPlan(taskID string, ctx map[string]string, _ *AgentRegistry, _ *Orchestrator) ([]taskstate.Step, error) {
 	searchID := stepID(taskID, 1)
 	sumID := stepID(taskID, 2)
+
+	ctx["result_key"] = sumID + ".output"
+
 	return []taskstate.Step{
 		{
 			ID:        searchID,
@@ -120,6 +123,8 @@ func (FanOutSummarizerBuilder) BuildPlan(taskID string, ctx map[string]string, _
 		Status:    taskstate.StepPending,
 		DependsOn: fetchIDs,
 	})
+
+	ctx["result_key"] = sumID + ".output"
 
 	return steps, nil
 }
