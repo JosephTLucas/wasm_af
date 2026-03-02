@@ -68,7 +68,7 @@ Most agent frameworks enforce security through **convention**: configure your to
 │  │     wasmtime Component Model Runtime  │                   │
 │  │  • selective Linker per instance      │                   │
 │  │  • WIT-typed host function imports    │                   │
-│  │  • epoch interruption (timeout)       │                   │
+│  │  • fuel-based timeout per invocation   │                   │
 │  │  • StoreLimits (memory)               │                   │
 │  │  • Canonical ABI (no manual serde)    │                   │
 │  └───────────────────────────────────────┘                   │
@@ -208,8 +208,8 @@ wasm_af/
 │       ├── email-read/             # config-injected inbox reader via host-config
 │       ├── memory/                 # conversation history via host-kv
 │       ├── responder/              # LLM response generation via host-llm
-│       ├── url-fetch/              # URL fetching (wasi:http TODO)
-│       ├── web-search/             # Brave Search API (wasi:http TODO)
+│       ├── url-fetch/              # URL fetching via wasi:http
+│       ├── web-search/             # Brave Search API via wasi:http
 │       └── summarizer/             # LLM summarization via host-llm
 │
 └── examples/
@@ -272,11 +272,9 @@ cd examples/prompt-injection && make demo    # requires Ollama (pulls model auto
 | `LLM_API_KEY` | — | API key for the LLM endpoint (required when `LLM_MODE=api`) |
 | `LLM_MODEL` | `gpt-4o-mini` | Model name for the LLM endpoint |
 | `LLM_TEMPERATURE` | — | Default sampling temperature |
-| `LLM_TOP_P` | — | Default nucleus sampling parameter |
 | `LLM_TIMEOUT_SEC` | `120` | HTTP client timeout for LLM API calls |
 | `PLUGIN_TIMEOUT_SEC` | `30` | Max wall-clock seconds per component invocation |
 | `PLUGIN_MAX_MEMORY_PAGES` | `256` | Max WASM memory pages per component (64 KiB each) |
-| `PLUGIN_MAX_HTTP_BYTES` | `4194304` | Max HTTP response size in bytes per component |
 | `SHELL_ALLOWED_COMMANDS` | `ls,cat,pwd,...` | Comma-separated command binary allowlist |
 | `SHELL_ALLOWED_PATHS` | `/tmp/wasmclaw` | Comma-separated path bases for shell argument confinement |
 | `SHELL_TIMEOUT_SEC` | `10` | Max wall-clock seconds per shell command execution |

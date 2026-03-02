@@ -283,7 +283,7 @@ echo ""
 # 2. No credentials were in the sandbox
 echo "  2. Credentials never entered the sandbox."
 echo ""
-echo "     API key lives in a Go closure (llm.go) — never serialized into TaskInput"
+echo "     API key lives in Rust host state (host/mod.rs) — never serialized into TaskInput"
 echo "     or written to WASM memory. The summarizer's input was: fetched HTML + query."
 echo ""
 

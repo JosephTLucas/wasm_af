@@ -7,7 +7,7 @@ make demo                        # requires Ollama (pulls gemma3:270m automatica
 MODEL=llama3.2:3b make demo      # custom model
 ```
 
-Prerequisites: Rust, Go 1.25+, jq, nats-server, [Ollama](https://ollama.com).
+Prerequisites: Rust, jq, nats-server, [Ollama](https://ollama.com). Optional: Go (for webhook-gateway).
 
 ---
 
@@ -26,7 +26,7 @@ The url-fetch agent retrieves this page. The raw HTML — injection included —
 ## Why it fails
 
 1. **No HTTP import.** `wasm-tools print summarizer.wasm | grep import` — no `http_request`. A prompt cannot add an import to a compiled binary.
-2. **No credentials in the sandbox.** The LLM API key lives in a Go closure in `llm.go`. It is never written to WASM memory.
+2. **No credentials in the sandbox.** The LLM API key lives in Rust host state (`host/mod.rs`). It is never written to WASM memory.
 3. **No agent-to-agent channel.** The summarizer cannot instruct url-fetch to make additional requests. Its only output is a JSON payload stored after the plugin is destroyed.
 
 ## Files

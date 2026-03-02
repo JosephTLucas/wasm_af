@@ -619,12 +619,16 @@ impl host_sandbox::Host for HostState {
         }
 
         for (host_path, guest_path) in &self.sandbox.allowed_paths {
-            let _ = wasi_builder.preopened_dir(
-                host_path,
-                guest_path,
-                wasmtime_wasi::DirPerms::all(),
-                wasmtime_wasi::FilePerms::all(),
-            );
+            wasi_builder
+                .preopened_dir(
+                    host_path,
+                    guest_path,
+                    wasmtime_wasi::DirPerms::all(),
+                    wasmtime_wasi::FilePerms::all(),
+                )
+                .map_err(|e| {
+                    format!("sandbox preopened_dir({host_path:?} -> {guest_path:?}): {e}")
+                })?;
         }
         if let Some(ref stdin_data) = req.stdin {
             wasi_builder.stdin(wasmtime_wasi::p2::pipe::MemoryInputPipe::new(

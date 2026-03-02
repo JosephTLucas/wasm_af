@@ -195,19 +195,19 @@ submit_and_poll_quiet() {
 box "SKILL EXECUTION (LLM routes to agents)"
 echo ""
 
-submit_and_poll "Shell agent (exec.Command, path-confined)" \
+submit_and_poll "Shell agent (std::process::Command, path-confined)" \
     "list files in /tmp/wasmclaw" "" "skill-demo"
 
 echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 echo ""
 
-submit_and_poll "Sandbox-exec agent (Python-in-WASM via Wazero)" \
+submit_and_poll "Sandbox-exec agent (Python-in-WASM via wasmtime)" \
     "calculate fibonacci of 10" "" "skill-demo"
 
 echo "  - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 echo ""
 
-echo "  ${BLD}File-ops: write then read${RST} ${DIM}(WASI std::fs, Wazero AllowedPaths)${RST}"
+echo "  ${BLD}File-ops: write then read${RST} ${DIM}(WASI std::fs, wasmtime preopened_dir)${RST}"
 echo ""
 
 submit_and_poll_quiet "File-ops write" \

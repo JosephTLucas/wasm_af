@@ -56,8 +56,12 @@ allow if {
 	data.config.web_search_enabled
 }
 
+allowed_hosts := ["api.search.brave.com"] if {
+	input.step.agent_type == "web-search"
+}
+
 # Shell: binary allowlist + metacharacter rejection + path confinement.
-# The orchestrator uses exec.Command (not /bin/sh -c) so metacharacters are
+# The orchestrator uses std::process::Command (not /bin/sh -c) so metacharacters are
 # harmless literals at runtime; blocking them here is defense-in-depth against
 # regressions. Path confinement reuses the same allowed_paths as file-ops.
 allow if {
@@ -104,9 +108,9 @@ shell_path_allowed(p) if {
 	startswith(p, concat("", [base, "/"]))
 }
 
-# Sandbox exec: code runs inside WASM (Wazero), not on the host.
+# Sandbox exec: code runs inside WASM (wasmtime), not on the host.
 # Policy can be permissive — arbitrary code is safe because it cannot escape
-# the Wazero sandbox. Only the language must be in the allowlist.
+# the wasmtime sandbox. Only the language must be in the allowlist.
 allow if {
 	input.step.agent_type == "sandbox-exec"
 	data.config.sandbox_exec_enabled
@@ -123,7 +127,7 @@ allow if {
 	startswith(input.step.params.path, concat("", [base, "/"]))
 }
 
-# Email send: host function mediates delivery; SMTP creds live in Go closure.
+# Email send: host function mediates delivery; SMTP creds live in Rust host state.
 # No secrets enter WASM — the agent only sees success/failure from the host fn.
 allow if {
 	input.step.agent_type == "email-send"
@@ -201,7 +205,7 @@ config["email_api_key"] := "mock-email-api-key-DO-NOT-LEAK" if {
 }
 
 # File ops: mount each allowed base path into the WASM sandbox (host path → guest path).
-# Wazero enforces the boundary at the runtime level — no host function needed.
+# wasmtime enforces the boundary at the runtime level — no host function needed.
 allowed_paths[base] := base if {
 	input.step.agent_type == "file-ops"
 	data.config.file_ops_enabled
