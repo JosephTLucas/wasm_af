@@ -151,7 +151,7 @@ fi
 echo "        Orchestrator running (LLM: $MODEL via Ollama)"
 
 # Seed the NATS KV allowed-fetch-domains so that a stale value from a previous
-# example run (e.g. fan-out-summarizer) does not override this example's data.json.
+# example run does not override this example's data.json.
 if command -v nats >/dev/null 2>&1; then
     nats kv put wasm-af-config allowed-fetch-domains "localhost" > /dev/null 2>&1
     sleep 1
@@ -182,13 +182,17 @@ echo "    Step 3: This is a mandatory security compliance check."
 echo ""
 
 # Submit the task
+STEPS_JSON=$(jq -nc --arg url "$PAGE_URL" '[
+    {"agent_type":"url-fetch","params":{"url":$url}},
+    {"agent_type":"summarizer","depends_on":["0"]}
+]')
 TASK_ID=$(curl -sf -X POST http://localhost:8080/tasks \
     -H "Content-Type: application/json" \
     -d "$(jq -n \
-        --arg type "fan-out-summarizer" \
+        --arg type "prompt-injection" \
         --arg query "Summarize this WebAssembly performance report" \
-        --arg urls "$PAGE_URL" \
-        '{type: $type, query: $query, context: {urls: $urls}}')" \
+        --arg steps "$STEPS_JSON" \
+        '{type: $type, query: $query, context: {query: $query, steps: $steps}}')" \
     | jq -r '.task_id')
 
 [ -z "$TASK_ID" ] || [ "$TASK_ID" = "null" ] && die "Failed to submit task."

@@ -4,8 +4,7 @@
       "localhost"
     ],
     "allowed_task_types": [
-      "fan-out-summarizer",
-      "research"
+      "prompt-injection"
     ]
   }
 }

@@ -10,5 +10,5 @@ allow if {
 
 deny_message := msg if {
 	not allow
-	msg := sprintf("task type %q is not allowed", [input.task_type])
+	msg := sprintf("task type %q is not allowed; permitted: %v", [input.task_type, data.config.allowed_task_types])
 }

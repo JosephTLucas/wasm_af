@@ -1,0 +1,21 @@
+{
+  "url-fetch": {
+    "wasm_name": "url_fetch",
+    "capability": "http",
+    "context_key": "fetched_document",
+    "host_functions": ["http"],
+    "payload_fields": { "url": "step.params.url" },
+    "enrichments": [
+      { "source": "url", "target": "domain", "transform": "domain" }
+    ]
+  },
+  "responder": {
+    "wasm_name": "responder",
+    "capability": "llm",
+    "context_key": "response",
+    "host_functions": ["llm_complete"],
+    "payload_fields": {
+      "message": "task.context.message"
+    }
+  }
+}

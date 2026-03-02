@@ -1,0 +1,7 @@
+pii_redactor.wasm
+wit_world/
+componentize_py_async_support/
+componentize_py_types.py
+poll_loop.py
+__pycache__/
+*.pyc

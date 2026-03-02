@@ -26,8 +26,8 @@ test_research_denied if {
 		with data.config.allowed_task_types as _allowed_types
 }
 
-test_fan_out_denied if {
-	not allow with input as {"task_type": "fan-out-summarizer"}
+test_unlisted_type_denied if {
+	not allow with input as {"task_type": "unlisted-task"}
 		with data.config.allowed_task_types as _allowed_types
 }
 

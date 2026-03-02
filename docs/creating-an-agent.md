@@ -239,6 +239,68 @@ Any WASM component that implements the `wasm-af:agent` WIT world can be uploaded
 - **Go** via TinyGo + `componentize-go`
 - **JavaScript** via `jco`
 
+### Python agent walkthrough
+
+Install `componentize-py`:
+
+```bash
+pip3 install componentize-py
+```
+
+Generate the Python bindings from the WIT definition:
+
+```bash
+mkdir my-agent && cd my-agent
+componentize-py -d ../wit/agent.wit -w agent-untrusted bindings .
+```
+
+This produces a `wit_world/` package with the types and protocol your code must implement. The generated `WitWorld` protocol has one method — `execute` — that receives a `TaskInput` and returns a `TaskOutput`.
+
+Write your agent in `app.py`:
+
+```python
+import json
+from wit_world.imports.types import TaskInput, TaskOutput, KvPair
+
+class WitWorld:
+    def execute(self, input: TaskInput) -> TaskOutput:
+        # Read data from ancestor steps via input.context,
+        # or from payload fields via input.payload.
+        text = ""
+        for kv in input.context:
+            text += kv.val
+
+        # Pure computation — no host functions available.
+        result = {"processed": len(text), "status": "ok"}
+
+        return TaskOutput(
+            payload=json.dumps(result),
+            metadata=[KvPair(key="status", val="ok")],
+        )
+```
+
+Key points:
+- The class **must** be named `WitWorld` (matching the generated protocol).
+- Return `TaskOutput` for success; raise any exception for `Err(string)`.
+- `input.context` contains outputs from ancestor steps (keyed by their `context_key`).
+- `input.payload` is a JSON string built from the agent's `payload_fields` mapping.
+- Only `host-config` is available. No LLM, HTTP, shell, KV, or email imports.
+
+Build the WASM component:
+
+```bash
+componentize-py -d ../wit/agent.wit -w agent-untrusted componentize app -o my_agent.wasm
+```
+
+> **macOS 26+**: `componentize-py` may crash due to Mach port guard restrictions in wasmtime. Use Docker as a workaround:
+> ```bash
+> docker run --rm -v "$PWD:/agent" -v "$PWD/../wit:/wit:ro" -w /agent \
+>   python:3.12-slim bash -c \
+>   'pip install componentize-py && componentize-py -d /wit -w agent-untrusted bindings . && componentize-py -d /wit -w agent-untrusted componentize app -o my_agent.wasm'
+> ```
+
+Python components are ~40 MB (they embed CPython). The orchestrator accepts uploads up to 50 MiB.
+
 ### Upload
 
 ```bash
@@ -257,7 +319,7 @@ External agents are governed by the BYOA policy tier (`policies/byoa.rego`). Def
 |---|---|
 | Host functions | none |
 | Network (HTTP) | none |
-| Memory | 64 pages (4 MiB) |
+| Memory | 64 pages (4 MiB) — increase to 256 for Python agents |
 | Timeout | 10 seconds |
 | Human approval | required |
 
@@ -277,3 +339,7 @@ External agents are governed by the BYOA policy tier (`policies/byoa.rego`). Def
 curl localhost:8080/agents | jq '.[] | select(.external)'
 curl -X DELETE localhost:8080/agents/my-agent
 ```
+
+### Working example
+
+See [`examples/pii-pipeline/`](../examples/pii-pipeline/) for a complete end-to-end demo: a Python PII redactor uploaded as a BYOA agent and executed in a multi-step pipeline alongside platform agents.

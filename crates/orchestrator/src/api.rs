@@ -345,10 +345,10 @@ pub async fn handle_register_agent(
         ));
     }
 
-    if wasm.len() > 10 * 1024 * 1024 {
+    if wasm.len() > 50 * 1024 * 1024 {
         return Err((
             StatusCode::BAD_REQUEST,
-            "wasm too large (max 10 MiB)".to_string(),
+            "wasm too large (max 50 MiB)".to_string(),
         ));
     }
 
@@ -421,7 +421,6 @@ fn build_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
         "chat" | "skill-demo" => build_chat_plan(req, task_id),
         "email-reply" => build_email_reply_plan(req, task_id),
         "reply-all" => build_reply_all_plan(req, task_id),
-        "fan-out-summarizer" => build_fan_out_plan(req, task_id),
         "generic" => build_generic_plan(req, task_id),
         _ => build_generic_plan(req, task_id),
     }
@@ -574,59 +573,6 @@ fn build_reply_all_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
     steps
 }
 
-/// Fan-out-summarizer: parallel url-fetch (or web-search) steps -> summarizer
-/// Accepts `urls` (comma-separated) or `query` in context. Falls back to
-/// generic plan if `context.steps` is provided (for full custom DAGs).
-fn build_fan_out_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
-    if req.context.contains_key("steps") {
-        return build_generic_plan(req, task_id);
-    }
-
-    let urls: Vec<String> = req
-        .context
-        .get("urls")
-        .map(|u| {
-            u.split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    if urls.is_empty() {
-        let mut steps = Vec::new();
-        steps.push(make_step(
-            task_id,
-            0,
-            "web-search",
-            &[],
-            HashMap::from([("query".to_string(), req.query.clone())]),
-        ));
-        steps.push(make_step(task_id, 1, "summarizer", &[0], HashMap::new()));
-        return steps;
-    }
-
-    let mut steps = Vec::new();
-    for (i, url) in urls.iter().enumerate() {
-        steps.push(make_step(
-            task_id,
-            i,
-            "url-fetch",
-            &[],
-            HashMap::from([("url".to_string(), url.clone())]),
-        ));
-    }
-    let fetch_indices: Vec<usize> = (0..urls.len()).collect();
-    steps.push(make_step(
-        task_id,
-        urls.len(),
-        "summarizer",
-        &fetch_indices,
-        HashMap::new(),
-    ));
-    steps
-}
-
 fn build_generic_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
     if let Some(steps_json) = req.context.get("steps") {
         #[derive(Deserialize)]
@@ -643,13 +589,24 @@ fn build_generic_plan(req: &SubmitTaskRequest, task_id: &str) -> Vec<Step> {
                 .enumerate()
                 .map(|(i, spec)| {
                     let id = format!("{task_id}-step-{i}");
+                    let depends_on = spec
+                        .depends_on
+                        .iter()
+                        .map(|dep| {
+                            if dep.parse::<usize>().is_ok() {
+                                format!("{task_id}-step-{dep}")
+                            } else {
+                                dep.clone()
+                            }
+                        })
+                        .collect();
                     Step {
                         id: id.clone(),
                         agent_type: spec.agent_type,
                         input_key: format!("{id}.input"),
                         output_key: format!("{id}.output"),
                         status: StepStatus::Pending,
-                        depends_on: spec.depends_on,
+                        depends_on,
                         params: spec.params,
                         ..Default::default()
                     }
@@ -748,55 +705,6 @@ mod tests {
         assert_eq!(plan[4].depends_on, vec!["t1-step-3"]);
     }
 
-    // ---- Fan-out plan ----
-
-    #[test]
-    fn fan_out_plan_with_urls() {
-        let r = req(
-            "fan-out-summarizer",
-            "",
-            vec![("urls", "https://a.com,https://b.com,https://c.com")],
-        );
-        let plan = build_plan(&r, "t1");
-        // 3 url-fetch + 1 summarizer = 4
-        assert_eq!(plan.len(), 4);
-        assert_eq!(plan[0].agent_type, "url-fetch");
-        assert_eq!(plan[1].agent_type, "url-fetch");
-        assert_eq!(plan[2].agent_type, "url-fetch");
-        assert_eq!(plan[3].agent_type, "summarizer");
-    }
-
-    #[test]
-    fn fan_out_summarizer_depends_on_all_fetches() {
-        let r = req(
-            "fan-out-summarizer",
-            "",
-            vec![("urls", "https://a.com,https://b.com")],
-        );
-        let plan = build_plan(&r, "t1");
-        let summarizer = plan.last().unwrap();
-        assert_eq!(summarizer.agent_type, "summarizer");
-        assert_eq!(summarizer.depends_on, vec!["t1-step-0", "t1-step-1"]);
-    }
-
-    #[test]
-    fn fan_out_no_urls_falls_back_to_web_search() {
-        let r = req("fan-out-summarizer", "some query", vec![]);
-        let plan = build_plan(&r, "t1");
-        assert_eq!(plan.len(), 2);
-        assert_eq!(plan[0].agent_type, "web-search");
-        assert_eq!(plan[1].agent_type, "summarizer");
-    }
-
-    #[test]
-    fn fan_out_with_context_steps_uses_generic() {
-        let steps_json = r#"[{"agent_type":"url-fetch","params":{"url":"https://x.com"}},{"agent_type":"summarizer","depends_on":["t1-step-0"]}]"#;
-        let r = req("fan-out-summarizer", "", vec![("steps", steps_json)]);
-        let plan = build_plan(&r, "t1");
-        assert_eq!(plan.len(), 2);
-        assert_eq!(plan[0].agent_type, "url-fetch");
-    }
-
     // ---- Generic plan ----
 
     #[test]
@@ -810,6 +718,31 @@ mod tests {
         assert_eq!(plan.len(), 2);
         assert_eq!(plan[0].agent_type, "web-search");
         assert_eq!(plan[0].params.get("query").unwrap(), "test");
+        assert_eq!(plan[1].depends_on, vec!["t1-step-0"]);
+    }
+
+    #[test]
+    fn generic_plan_resolves_numeric_depends_on() {
+        let steps_json = r#"[
+            {"agent_type": "url-fetch", "params": {"url": "https://x.com"}},
+            {"agent_type": "pii-redactor", "depends_on": ["0"]},
+            {"agent_type": "responder", "depends_on": ["1"]}
+        ]"#;
+        let r = req("pii-pipeline", "", vec![("steps", steps_json)]);
+        let plan = build_plan(&r, "t1");
+        assert_eq!(plan.len(), 3);
+        assert_eq!(plan[1].depends_on, vec!["t1-step-0"]);
+        assert_eq!(plan[2].depends_on, vec!["t1-step-1"]);
+    }
+
+    #[test]
+    fn generic_plan_preserves_full_step_ids_in_depends_on() {
+        let steps_json = r#"[
+            {"agent_type": "a"},
+            {"agent_type": "b", "depends_on": ["t1-step-0"]}
+        ]"#;
+        let r = req("generic", "", vec![("steps", steps_json)]);
+        let plan = build_plan(&r, "t1");
         assert_eq!(plan[1].depends_on, vec!["t1-step-0"]);
     }
 

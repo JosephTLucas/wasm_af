@@ -195,7 +195,7 @@ impl WasmEngine {
             wit::host_email::add_to_linker::<_, HasSelf<_>>(&mut linker, |x| x)?;
         }
         if caps.contains(&HostCapability::Http) {
-            wasmtime_wasi_http::add_to_linker_sync(&mut linker)?;
+            wasmtime_wasi_http::add_only_http_to_linker_sync(&mut linker)?;
         }
         wit::host_config::add_to_linker::<_, HasSelf<_>>(&mut linker, |x| x)?;
 

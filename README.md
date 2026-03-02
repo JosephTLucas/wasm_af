@@ -100,7 +100,7 @@ NATS JetStream KV provides task state persistence and an immutable audit trail.
 
 **Policy-driven capability grants.** [Open Policy Agent (OPA)](https://www.openpolicyagent.org/) evaluates capability grants and gates every step of execution. Structured decisions from Rego (`allowed_hosts`, `max_memory_pages`, `timeout_sec`, `host_functions`, `config`, `allowed_paths`, `requires_approval`) control which WIT interfaces are linked into each component instance. Deny-by-default; the orchestrator won't start without `OPA_POLICY`.
 
-**Per-instance scoping.** Each component gets its own `Linker` and `Store`. In the fan-out example, three url-fetch instances run in parallel — each scoped to exactly one domain.
+**Per-instance scoping.** Each component gets its own `Linker` and `Store`. When multiple url-fetch instances run in parallel, each is scoped to exactly one domain.
 
 **No inter-agent communication.** Agents do not talk to each other. The orchestrator mediates all data flow, stores intermediate results in NATS KV, and passes context from ancestor steps to their dependents.
 
@@ -213,7 +213,7 @@ wasm_af/
 │       └── summarizer/             # LLM summarization via host-llm
 │
 └── examples/
-    ├── fan-out-summarizer/         # parallel fetch + summarize demo
+    ├── pii-pipeline/              # BYOA demo: Python agent in a multi-agent pipeline
     ├── prompt-injection/           # security demo: injection fails structurally
     └── wasmclaw/                   # personal AI assistant with two-tier execution
         ├── lib/setup.sh            # shared infra: build, NATS, orchestrator, cleanup
@@ -240,10 +240,12 @@ LLM_MODE=api make demo                 # NVIDIA NIM API (needs NV_API_KEY)
 make reply-all-demo                    # parallel DAG: jailbreak + approval (interactive Y/n)
 ```
 
-### Fan-Out Summarizer
+### PII Pipeline (Bring Your Own Agent)
 
 ```bash
-./examples/fan-out-summarizer/run.sh
+cd examples/pii-pipeline
+make demo                              # mock LLM (deterministic, no deps)
+LLM_MODE=api make demo                 # NVIDIA NIM API (needs NV_API_KEY)
 ```
 
 ### Prompt Injection

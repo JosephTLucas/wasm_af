@@ -4,7 +4,7 @@ import rego.v1
 
 test_url_fetch_localhost_allowed if {
 	allow with input as {
-		"step": {"agent_type": "url-fetch", "domain": "localhost"},
+		"step": {"agent_type": "url-fetch", "params": {"domain": "localhost"}},
 		"agent": {"capability": "http"},
 	}
 		with data.config.allowed_domains as ["localhost"]
@@ -12,7 +12,7 @@ test_url_fetch_localhost_allowed if {
 
 test_url_fetch_evil_denied if {
 	not allow with input as {
-		"step": {"agent_type": "url-fetch", "domain": "evil.com"},
+		"step": {"agent_type": "url-fetch", "params": {"domain": "evil.com"}},
 		"agent": {"capability": "http"},
 	}
 		with data.config.allowed_domains as ["localhost"]

@@ -11,7 +11,7 @@ default allow := false
 allow if {
 	input.step.agent_type == "url-fetch"
 	input.agent.capability == "http"
-	input.step.domain in data.config.allowed_domains
+	input.step.params.domain in data.config.allowed_domains
 }
 
 allow if {
@@ -27,9 +27,9 @@ allowed_hosts := [input.step.params.restricted_to] if {
 	input.step.params.restricted_to
 }
 
-allowed_hosts := [input.step.domain] if {
+allowed_hosts := [input.step.params.domain] if {
 	input.step.agent_type == "url-fetch"
-	input.step.domain
+	input.step.params.domain
 	not input.step.params.restricted_to
 }
 

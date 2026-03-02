@@ -1,0 +1,8 @@
+{
+  "config": {
+    "allowed_task_types": ["pii-pipeline"],
+    "allowed_domains": ["localhost", "127.0.0.1"],
+    "approved_external_agents": ["pii-redactor"]
+  },
+  "secrets": {}
+}

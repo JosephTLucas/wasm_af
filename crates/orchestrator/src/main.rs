@@ -5,6 +5,7 @@ mod policy;
 mod registry;
 mod scheduler;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{delete, get, post};
 use axum::Router;
 use policy::{load_data_file, load_rego_modules, OpaEvaluator};
@@ -311,6 +312,7 @@ async fn main() -> anyhow::Result<()> {
             post(api::handle_reject_step),
         )
         .route("/agents", post(api::handle_register_agent))
+        .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .route("/agents", get(api::handle_list_agents))
         .route("/agents/{name}", delete(api::handle_remove_agent))
         .route("/healthz", get(api::handle_healthz))
