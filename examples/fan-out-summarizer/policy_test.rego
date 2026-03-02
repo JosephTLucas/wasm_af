@@ -78,3 +78,10 @@ test_web_search_config_real_key if {
 	}
 		with data.secrets.brave_api_key as "BSA-real-key"
 }
+
+test_web_search_sets_allowed_hosts if {
+	allowed_hosts == ["api.search.brave.com"] with input as {
+		"step": {"agent_type": "web-search"},
+		"agent": {"capability": "http"},
+	}
+}

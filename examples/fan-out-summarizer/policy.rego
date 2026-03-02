@@ -40,6 +40,10 @@ allowed_hosts := [input.step.domain] if {
 	not input.step.params.restricted_to
 }
 
+allowed_hosts := ["api.search.brave.com"] if {
+	input.step.agent_type == "web-search"
+}
+
 # Policy-driven config injection: secrets and feature flags flow from OPA
 # data into the plugin's Extism config — never in the task request.
 # In production, replace mock_results with the real key from data.secrets.

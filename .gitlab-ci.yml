@@ -118,7 +118,7 @@ build-orchestrator:
   image: rust:latest
   script:
     - mkdir -p bin
-    - cargo build --release -p orchestrator
+    - cargo build --release -p wasm-af-orchestrator
     - cp target/release/orchestrator bin/orchestrator
   artifacts:
     paths:

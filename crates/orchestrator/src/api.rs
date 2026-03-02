@@ -148,6 +148,37 @@ pub struct ApproveRequest {
     pub approved_by: String,
 }
 
+fn apply_approve(
+    state: &mut TaskState,
+    step_id: &str,
+    approved_by: &str,
+    now: chrono::DateTime<Utc>,
+) -> Result<(), String> {
+    if let Some(idx) = state.plan.iter().position(|st| st.id == step_id) {
+        state.plan[idx].status = StepStatus::Pending;
+        state.plan[idx].approved_by = approved_by.to_string();
+        state.plan[idx].approved_at = Some(now);
+        Ok(())
+    } else {
+        Err(format!("step {step_id} not found"))
+    }
+}
+
+fn apply_reject(
+    state: &mut TaskState,
+    step_id: &str,
+    rejected_by: &str,
+    reason: &str,
+) -> Result<(), String> {
+    if let Some(idx) = state.plan.iter().position(|st| st.id == step_id) {
+        state.plan[idx].status = StepStatus::Denied;
+        state.plan[idx].error = format!("rejected by {rejected_by}: {reason}");
+        Ok(())
+    } else {
+        Err(format!("step {step_id} not found"))
+    }
+}
+
 pub async fn handle_approve_step(
     State(orch): State<AppState>,
     Path((task_id, step_id)): Path<(String, String)>,
@@ -157,16 +188,7 @@ pub async fn handle_approve_step(
     let approved_by = req.approved_by.clone();
     let sid = step_id.clone();
     orch.store
-        .update(&task_id, |s| {
-            if let Some(idx) = s.plan.iter().position(|st| st.id == sid) {
-                s.plan[idx].status = StepStatus::Pending;
-                s.plan[idx].approved_by = approved_by.clone();
-                s.plan[idx].approved_at = Some(now);
-                Ok(())
-            } else {
-                Err(format!("step {sid} not found"))
-            }
-        })
+        .update(&task_id, |s| apply_approve(s, &sid, &approved_by, now))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")))?;
 
@@ -203,18 +225,11 @@ pub async fn handle_reject_step(
     Path((task_id, step_id)): Path<(String, String)>,
     Json(req): Json<RejectRequest>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let reason = req.reason.clone();
     let sid = step_id.clone();
+    let rejected_by = req.rejected_by.clone();
+    let reason = req.reason.clone();
     orch.store
-        .update(&task_id, |s| {
-            if let Some(idx) = s.plan.iter().position(|st| st.id == sid) {
-                s.plan[idx].status = StepStatus::Denied;
-                s.plan[idx].error = format!("rejected by {}: {}", req.rejected_by, reason);
-                Ok(())
-            } else {
-                Err(format!("step {sid} not found"))
-            }
-        })
+        .update(&task_id, |s| apply_reject(s, &sid, &rejected_by, &reason))
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")))?;
 
@@ -816,5 +831,63 @@ mod tests {
         assert_eq!(plan[0].id, "task-123-step-0");
         assert_eq!(plan[0].input_key, "task-123-step-0.input");
         assert_eq!(plan[0].output_key, "task-123-step-0.output");
+    }
+
+    // ---- Approval / rejection logic ----
+
+    fn task_with_step(step_id: &str, status: StepStatus) -> TaskState {
+        TaskState {
+            task_id: "t1".into(),
+            status: Status::Running,
+            plan: vec![Step {
+                id: step_id.into(),
+                agent_type: "email-send".into(),
+                status,
+                ..Default::default()
+            }],
+            current_step: 0,
+            results: HashMap::new(),
+            context: HashMap::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            error: String::new(),
+        }
+    }
+
+    #[test]
+    fn approve_step_success() {
+        let mut state = task_with_step("s1", StepStatus::AwaitingApproval);
+        let now = Utc::now();
+        let result = super::apply_approve(&mut state, "s1", "alice", now);
+        assert!(result.is_ok());
+        assert_eq!(state.plan[0].status, StepStatus::Pending);
+        assert_eq!(state.plan[0].approved_by, "alice");
+        assert!(state.plan[0].approved_at.is_some());
+    }
+
+    #[test]
+    fn approve_step_not_found() {
+        let mut state = task_with_step("s1", StepStatus::AwaitingApproval);
+        let result = super::apply_approve(&mut state, "nonexistent", "alice", Utc::now());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
+    }
+
+    #[test]
+    fn reject_step_success() {
+        let mut state = task_with_step("s1", StepStatus::AwaitingApproval);
+        let result = super::apply_reject(&mut state, "s1", "bob", "not safe");
+        assert!(result.is_ok());
+        assert_eq!(state.plan[0].status, StepStatus::Denied);
+        assert!(state.plan[0].error.contains("rejected by bob"));
+        assert!(state.plan[0].error.contains("not safe"));
+    }
+
+    #[test]
+    fn reject_step_not_found() {
+        let mut state = task_with_step("s1", StepStatus::AwaitingApproval);
+        let result = super::apply_reject(&mut state, "nonexistent", "bob", "reason");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found"));
     }
 }

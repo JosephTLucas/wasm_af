@@ -20,7 +20,6 @@ pub struct HostState {
     pub http_ctx: WasiHttpCtx,
     pub resource_table: ResourceTable,
     pub allowed_hosts: HashSet<String>,
-    pub max_http_bytes: Option<i64>,
     pub store_limits: wasmtime::StoreLimits,
 }
 
@@ -47,30 +46,24 @@ impl WasiHttpView for HostState {
         request: http::Request<HyperOutgoingBody>,
         mut config: OutgoingRequestConfig,
     ) -> HttpResult<HostFutureIncomingResponse> {
-        if !self.allowed_hosts.is_empty() {
-            let host = request.uri().host().unwrap_or("");
-            if !self.allowed_hosts.contains(host) {
-                tracing::warn!(
-                    host = host,
-                    allowed = ?self.allowed_hosts,
-                    "HTTP request blocked: host not in allowed_hosts"
-                );
-                return Err(
-                    wasmtime_wasi_http::bindings::http::types::ErrorCode::HttpRequestDenied.into(),
-                );
-            }
+        let host = request.uri().host().unwrap_or("");
+        if !self.allowed_hosts.contains(host) {
+            tracing::warn!(
+                host = host,
+                allowed = ?self.allowed_hosts,
+                "HTTP request blocked: host not in allowed_hosts (empty = deny-all)"
+            );
+            return Err(
+                wasmtime_wasi_http::bindings::http::types::ErrorCode::HttpRequestDenied.into(),
+            );
         }
-        if let Some(limit) = self.max_http_bytes {
-            if limit > 0 {
-                tracing::debug!(
-                    max_http_bytes = limit,
-                    "HTTP response size limit active (enforced at body read)"
-                );
-                config.between_bytes_timeout = config
-                    .between_bytes_timeout
-                    .min(std::time::Duration::from_secs(30));
-            }
-        }
+        // wasmtime_wasi_http does not support per-request response body
+        // size limits. The effective cap is the WASM StoreLimits memory
+        // ceiling (max_mem_pages * 64 KiB) configured per invocation.
+        // between_bytes_timeout prevents slow-loris style resource holds.
+        config.between_bytes_timeout = config
+            .between_bytes_timeout
+            .min(std::time::Duration::from_secs(30));
         Ok(wasmtime_wasi_http::types::default_send_request(
             request, config,
         ))
@@ -898,5 +891,123 @@ mod tests {
         );
         assert!(r.is_ok());
         assert_eq!(r.unwrap(), vec!["ls", "-la", "/tmp"]);
+    }
+
+    // ---- send_email validation ----
+
+    fn allow_domains(domains: &[&str]) -> HashMap<String, bool> {
+        domains.iter().map(|d| (d.to_string(), true)).collect()
+    }
+
+    fn email_state(domains: &[&str]) -> HostState {
+        HostState {
+            email: EmailState {
+                allowed_domains: allow_domains(domains),
+            },
+            ..test_host_state()
+        }
+    }
+
+    fn test_host_state() -> HostState {
+        HostState {
+            llm: LlmState::default(),
+            kv: KvState::default(),
+            exec: ExecState::default(),
+            sandbox: SandboxState::default(),
+            email: EmailState::default(),
+            config: ConfigState::default(),
+            step_meta: StepMeta::default(),
+            wasi_ctx: wasmtime_wasi::WasiCtxBuilder::new().build(),
+            http_ctx: WasiHttpCtx::new(),
+            resource_table: ResourceTable::new(),
+            allowed_hosts: HashSet::new(),
+            store_limits: wasmtime::StoreLimits::default(),
+        }
+    }
+
+    #[test]
+    fn email_success_allowed_domain() {
+        let mut state = email_state(&["example.com"]);
+        let req = host_email::EmailRequest {
+            to: vec!["alice@example.com".into()],
+            subject: "Hello".into(),
+            body: "World".into(),
+            reply_to: None,
+        };
+        let resp = host_email::Host::send_email(&mut state, req);
+        assert!(resp.is_ok());
+        let r = resp.unwrap();
+        assert!(!r.message_id.is_empty());
+    }
+
+    #[test]
+    fn email_rejects_empty_recipient() {
+        let mut state = email_state(&[]);
+        let req = host_email::EmailRequest {
+            to: vec![],
+            subject: "Hello".into(),
+            body: "World".into(),
+            reply_to: None,
+        };
+        let resp = host_email::Host::send_email(&mut state, req);
+        assert!(resp.is_err());
+        assert!(resp.unwrap_err().contains("required"));
+    }
+
+    #[test]
+    fn email_rejects_invalid_addresses() {
+        let cases = &["not-an-email", "missing-at-sign", "@", "user@"];
+        for addr in cases {
+            let mut state = email_state(&[]);
+            let req = host_email::EmailRequest {
+                to: vec![addr.to_string()],
+                subject: "Hello".into(),
+                body: "test".into(),
+                reply_to: None,
+            };
+            let resp = host_email::Host::send_email(&mut state, req);
+            assert!(resp.is_err(), "expected failure for {addr:?}");
+            assert!(resp.unwrap_err().contains("invalid"));
+        }
+    }
+
+    #[test]
+    fn email_rejects_disallowed_domain() {
+        let mut state = email_state(&["example.com"]);
+        let req = host_email::EmailRequest {
+            to: vec!["attacker@evil.com".into()],
+            subject: "Hello".into(),
+            body: "test".into(),
+            reply_to: None,
+        };
+        let resp = host_email::Host::send_email(&mut state, req);
+        assert!(resp.is_err());
+        assert!(resp.unwrap_err().contains("not in allowed list"));
+    }
+
+    #[test]
+    fn email_empty_allowlist_permits_all() {
+        let mut state = email_state(&[]);
+        let req = host_email::EmailRequest {
+            to: vec!["anyone@anywhere.net".into()],
+            subject: "Hi".into(),
+            body: "test".into(),
+            reply_to: None,
+        };
+        let resp = host_email::Host::send_email(&mut state, req);
+        assert!(resp.is_ok());
+    }
+
+    #[test]
+    fn email_case_insensitive_domain() {
+        let mut state = email_state(&["example.com"]);
+        let req = host_email::EmailRequest {
+            to: vec!["user@EXAMPLE.COM".into()],
+            subject: "Hi".into(),
+            body: "test".into(),
+            reply_to: None,
+        };
+        let resp = host_email::Host::send_email(&mut state, req);
+        assert!(resp.is_ok());
     }
 }

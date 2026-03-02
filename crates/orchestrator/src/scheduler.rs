@@ -1,4 +1,4 @@
-use crate::engine::{KvPair, PluginOpts, TaskInput, WasmEngine};
+use crate::engine::{sanitize_allowed_paths, KvPair, PluginOpts, TaskInput, WasmEngine};
 use crate::host::{
     ConfigState, EmailState, ExecState, HostState, KvState, LlmState, SandboxState, StepMeta,
 };
@@ -505,14 +505,22 @@ impl Orchestrator {
             .put_payload(&step.input_key, &input_payload)
             .await?;
 
+        let sanitized_paths = sanitize_allowed_paths(&opts.allowed_paths)
+            .map_err(|e| anyhow::anyhow!("invalid allowed_paths: {e}"))?;
         let mut wasi_builder = wasmtime_wasi::WasiCtxBuilder::new();
-        for (host_path, guest_path) in &opts.allowed_paths {
-            let _ = wasi_builder.preopened_dir(
-                host_path,
-                guest_path,
-                wasmtime_wasi::DirPerms::all(),
-                wasmtime_wasi::FilePerms::all(),
-            );
+        for (host_path, guest_path) in &sanitized_paths {
+            wasi_builder
+                .preopened_dir(
+                    host_path,
+                    guest_path,
+                    wasmtime_wasi::DirPerms::all(),
+                    wasmtime_wasi::FilePerms::all(),
+                )
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "preopened_dir({host_path:?} -> {guest_path:?}): {e}"
+                    )
+                })?;
         }
         let wasi_ctx = wasi_builder.build();
         let allowed_hosts_set: std::collections::HashSet<String> =
@@ -535,7 +543,6 @@ impl Orchestrator {
             http_ctx: wasmtime_wasi_http::WasiHttpCtx::new(),
             resource_table: wasmtime_wasi::ResourceTable::new(),
             allowed_hosts: allowed_hosts_set,
-            max_http_bytes: opts.max_http_bytes,
             store_limits: wasmtime::StoreLimits::default(),
         };
 

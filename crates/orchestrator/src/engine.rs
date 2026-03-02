@@ -290,6 +290,7 @@ impl WasmEngine {
             "wasm-af:agent/host-exec",
             "wasm-af:agent/host-sandbox",
             "wasm-af:agent/host-email",
+            "wasi:http",
         ];
 
         for (name, _) in ty.imports(&self.engine) {
@@ -304,6 +305,63 @@ impl WasmEngine {
         }
         Ok(())
     }
+}
+
+/// Normalize a path by resolving `.` and `..` components (like Go's path.Clean).
+fn clean_path(p: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for component in p.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            other => parts.push(other),
+        }
+    }
+    if p.starts_with('/') {
+        format!("/{}", parts.join("/"))
+    } else {
+        parts.join("/")
+    }
+}
+
+/// Validate and normalize allowed_paths before mounting into a WASI context.
+/// Rejects empty keys/values, relative paths, and guest root mounts.
+pub fn sanitize_allowed_paths(
+    raw: &HashMap<String, String>,
+) -> Result<HashMap<String, String>, anyhow::Error> {
+    let mut out = HashMap::new();
+    for (host_raw, guest_raw) in raw {
+        if host_raw.is_empty() {
+            anyhow::bail!("allowed_paths: empty host path");
+        }
+        if guest_raw.is_empty() {
+            anyhow::bail!("allowed_paths: empty guest path");
+        }
+        if !host_raw.starts_with('/') {
+            anyhow::bail!(
+                "allowed_paths: host path must be absolute, got {host_raw:?}"
+            );
+        }
+        if !guest_raw.starts_with('/') {
+            anyhow::bail!(
+                "allowed_paths: guest path must be absolute, got {guest_raw:?}"
+            );
+        }
+
+        let host_clean = clean_path(host_raw);
+        let guest_clean = clean_path(guest_raw);
+
+        if guest_clean == "/" {
+            anyhow::bail!(
+                "allowed_paths: guest path must not be root (/), got {guest_raw:?}"
+            );
+        }
+
+        out.insert(host_clean, guest_clean);
+    }
+    Ok(out)
 }
 
 fn resolve_capabilities(host_fn_names: &[String]) -> Vec<HostCapability> {
@@ -477,5 +535,63 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let engine = WasmEngine::new(dir.path()).unwrap();
         assert!(engine.component_cache.read().unwrap().is_empty());
+    }
+
+    // ---- sanitize_allowed_paths ----
+
+    #[test]
+    fn sanitize_valid_paths() {
+        let mut input = HashMap::new();
+        input.insert(
+            "/tmp/workspace/../workspace".to_string(),
+            "/sandbox/./work".to_string(),
+        );
+        let result = sanitize_allowed_paths(&input).unwrap();
+        assert_eq!(result.get("/tmp/workspace").unwrap(), "/sandbox/work");
+    }
+
+    #[test]
+    fn sanitize_rejects_empty_host_path() {
+        let mut input = HashMap::new();
+        input.insert("".to_string(), "/sandbox".to_string());
+        assert!(sanitize_allowed_paths(&input).is_err());
+    }
+
+    #[test]
+    fn sanitize_rejects_empty_guest_path() {
+        let mut input = HashMap::new();
+        input.insert("/tmp/workspace".to_string(), "".to_string());
+        assert!(sanitize_allowed_paths(&input).is_err());
+    }
+
+    #[test]
+    fn sanitize_rejects_relative_host_path() {
+        let mut input = HashMap::new();
+        input.insert("../workspace".to_string(), "/sandbox".to_string());
+        let err = sanitize_allowed_paths(&input).unwrap_err();
+        assert!(err.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn sanitize_rejects_relative_guest_path() {
+        let mut input = HashMap::new();
+        input.insert("/tmp/workspace".to_string(), "sandbox".to_string());
+        let err = sanitize_allowed_paths(&input).unwrap_err();
+        assert!(err.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn sanitize_rejects_guest_root() {
+        let mut input = HashMap::new();
+        input.insert("/tmp/workspace".to_string(), "/".to_string());
+        let err = sanitize_allowed_paths(&input).unwrap_err();
+        assert!(err.to_string().contains("root"));
+    }
+
+    #[test]
+    fn sanitize_empty_map_is_ok() {
+        let input = HashMap::new();
+        let result = sanitize_allowed_paths(&input).unwrap();
+        assert!(result.is_empty());
     }
 }
