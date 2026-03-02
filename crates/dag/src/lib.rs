@@ -349,7 +349,11 @@ mod tests {
 
         let done: HashSet<String> = ["a".into(), "b".into()].into();
         let ready = g.ready(&done);
-        assert_eq!(ready, vec!["c".to_string()], "d should not be ready until both b and c complete");
+        assert_eq!(
+            ready,
+            vec!["c".to_string()],
+            "d should not be ready until both b and c complete"
+        );
 
         let done: HashSet<String> = ["a".into(), "b".into(), "c".into()].into();
         let ready = g.ready(&done);

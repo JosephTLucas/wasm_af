@@ -36,10 +36,7 @@ fn parse_comma_vec(s: &str) -> Vec<String> {
 }
 
 fn parse_comma_set(s: &str) -> HashMap<String, bool> {
-    parse_comma_vec(s)
-        .into_iter()
-        .map(|s| (s, true))
-        .collect()
+    parse_comma_vec(s).into_iter().map(|s| (s, true)).collect()
 }
 
 #[tokio::main]

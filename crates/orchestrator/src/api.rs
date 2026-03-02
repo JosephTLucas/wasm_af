@@ -474,10 +474,7 @@ pub async fn handle_message(
 
     let response = poll_for_response(&orch, &task_id).await?;
 
-    Ok(Json(MessageResponse {
-        response,
-        task_id,
-    }))
+    Ok(Json(MessageResponse { response, task_id }))
 }
 
 async fn poll_for_response(orch: &AppState, task_id: &str) -> Result<String, (StatusCode, String)> {

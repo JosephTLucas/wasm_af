@@ -347,23 +347,17 @@ pub fn sanitize_allowed_paths(
             anyhow::bail!("allowed_paths: empty guest path");
         }
         if !host_raw.starts_with('/') {
-            anyhow::bail!(
-                "allowed_paths: host path must be absolute, got {host_raw:?}"
-            );
+            anyhow::bail!("allowed_paths: host path must be absolute, got {host_raw:?}");
         }
         if !guest_raw.starts_with('/') {
-            anyhow::bail!(
-                "allowed_paths: guest path must be absolute, got {guest_raw:?}"
-            );
+            anyhow::bail!("allowed_paths: guest path must be absolute, got {guest_raw:?}");
         }
 
         let host_clean = clean_path(host_raw);
         let guest_clean = clean_path(guest_raw);
 
         if guest_clean == "/" {
-            anyhow::bail!(
-                "allowed_paths: guest path must not be root (/), got {guest_raw:?}"
-            );
+            anyhow::bail!("allowed_paths: guest path must not be root (/), got {guest_raw:?}");
         }
 
         out.insert(host_clean, guest_clean);
@@ -556,10 +550,18 @@ mod tests {
         let engine = WasmEngine::new(dir.path()).unwrap();
         // Populate the cache by loading the component.
         engine.get_component(&wasm_path).unwrap();
-        assert!(engine.component_cache.read().unwrap().contains_key(&wasm_path));
+        assert!(engine
+            .component_cache
+            .read()
+            .unwrap()
+            .contains_key(&wasm_path));
 
         engine.evict_component(&wasm_path);
-        assert!(!engine.component_cache.read().unwrap().contains_key(&wasm_path));
+        assert!(!engine
+            .component_cache
+            .read()
+            .unwrap()
+            .contains_key(&wasm_path));
     }
 
     #[test]

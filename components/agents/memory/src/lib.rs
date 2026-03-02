@@ -143,6 +143,9 @@ mod tests {
 
     #[test]
     fn merge_append_preserves_whitespace_in_values() {
-        assert_eq!(merge_append(Some("  spaced  "), "  also  "), "  spaced  \n  also  ");
+        assert_eq!(
+            merge_append(Some("  spaced  "), "  also  "),
+            "  spaced  \n  also  "
+        );
     }
 }

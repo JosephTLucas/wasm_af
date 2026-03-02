@@ -513,9 +513,7 @@ impl Orchestrator {
                     wasmtime_wasi::FilePerms::all(),
                 )
                 .map_err(|e| {
-                    anyhow::anyhow!(
-                        "preopened_dir({host_path:?} -> {guest_path:?}): {e}"
-                    )
+                    anyhow::anyhow!("preopened_dir({host_path:?} -> {guest_path:?}): {e}")
                 })?;
         }
         let wasi_ctx = wasi_builder.build();

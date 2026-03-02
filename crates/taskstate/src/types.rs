@@ -165,10 +165,22 @@ mod tests {
 
     #[test]
     fn status_serializes_to_snake_case() {
-        assert_eq!(serde_json::to_string(&Status::Pending).unwrap(), "\"pending\"");
-        assert_eq!(serde_json::to_string(&Status::Running).unwrap(), "\"running\"");
-        assert_eq!(serde_json::to_string(&Status::Completed).unwrap(), "\"completed\"");
-        assert_eq!(serde_json::to_string(&Status::Failed).unwrap(), "\"failed\"");
+        assert_eq!(
+            serde_json::to_string(&Status::Pending).unwrap(),
+            "\"pending\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Status::Running).unwrap(),
+            "\"running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Status::Completed).unwrap(),
+            "\"completed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Status::Failed).unwrap(),
+            "\"failed\""
+        );
         assert_eq!(
             serde_json::to_string(&Status::AwaitingApproval).unwrap(),
             "\"awaiting_approval\""
@@ -216,7 +228,10 @@ mod tests {
             (EventType::PolicyDeny, "\"policy.deny\""),
             (EventType::ComponentStart, "\"component.start\""),
             (EventType::ComponentStop, "\"component.stop\""),
-            (EventType::StepAwaitingApproval, "\"step.awaiting_approval\""),
+            (
+                EventType::StepAwaitingApproval,
+                "\"step.awaiting_approval\"",
+            ),
             (EventType::StepApproved, "\"step.approved\""),
             (EventType::StepRejected, "\"step.rejected\""),
         ];
@@ -239,12 +254,27 @@ mod tests {
         let json = serde_json::to_string(&step).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert!(v.get("error").is_none(), "empty error should be omitted");
-        assert!(v.get("depends_on").is_none(), "empty depends_on should be omitted");
+        assert!(
+            v.get("depends_on").is_none(),
+            "empty depends_on should be omitted"
+        );
         assert!(v.get("params").is_none(), "empty params should be omitted");
-        assert!(v.get("started_at").is_none(), "None started_at should be omitted");
-        assert!(v.get("approval_reason").is_none(), "empty approval_reason should be omitted");
-        assert!(v.get("approved_by").is_none(), "empty approved_by should be omitted");
-        assert!(v.get("approved_at").is_none(), "None approved_at should be omitted");
+        assert!(
+            v.get("started_at").is_none(),
+            "None started_at should be omitted"
+        );
+        assert!(
+            v.get("approval_reason").is_none(),
+            "empty approval_reason should be omitted"
+        );
+        assert!(
+            v.get("approved_by").is_none(),
+            "empty approved_by should be omitted"
+        );
+        assert!(
+            v.get("approved_at").is_none(),
+            "None approved_at should be omitted"
+        );
     }
 
     #[test]
@@ -306,7 +336,10 @@ mod tests {
         let state = sample_task_state();
         let json = serde_json::to_string(&state).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(v.get("error").is_none(), "empty error should be omitted from TaskState");
+        assert!(
+            v.get("error").is_none(),
+            "empty error should be omitted from TaskState"
+        );
     }
 
     #[test]
