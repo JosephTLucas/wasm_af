@@ -76,3 +76,51 @@ impl Guest for SummarizerAgent {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_all_fields_default() {
+        let input: SummarizerInput = serde_json::from_str("{}").unwrap();
+        assert!(input.query.is_empty());
+        assert!(input.model.is_empty());
+        assert!(input.max_tokens.is_none());
+    }
+
+    #[test]
+    fn input_with_all_fields() {
+        let input: SummarizerInput =
+            serde_json::from_str(r#"{"query":"test","model":"gpt-4","max_tokens":1024}"#).unwrap();
+        assert_eq!(input.query, "test");
+        assert_eq!(input.model, "gpt-4");
+        assert_eq!(input.max_tokens, Some(1024));
+    }
+
+    #[test]
+    fn input_partial_fields() {
+        let input: SummarizerInput =
+            serde_json::from_str(r#"{"query":"summarize this"}"#).unwrap();
+        assert_eq!(input.query, "summarize this");
+        assert!(input.model.is_empty());
+        assert!(input.max_tokens.is_none());
+    }
+
+    #[test]
+    fn output_serialization() {
+        let output = SummaryOutput {
+            summary: "key points here".into(),
+            model_used: "gpt-4".into(),
+        };
+        let json: serde_json::Value = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["summary"], "key points here");
+        assert_eq!(json["model_used"], "gpt-4");
+    }
+
+    #[test]
+    fn default_max_tokens_fallback_is_512() {
+        let input: SummarizerInput = serde_json::from_str("{}").unwrap();
+        assert_eq!(input.max_tokens.unwrap_or(512), 512);
+    }
+}

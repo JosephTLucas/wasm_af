@@ -209,3 +209,54 @@ impl Store {
         &self.tasks
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn store_error_nats_display() {
+        let err = StoreError::Nats("connection refused".into());
+        assert_eq!(err.to_string(), "nats: connection refused");
+    }
+
+    #[test]
+    fn store_error_not_found_display() {
+        let err = StoreError::NotFound("task-123".into());
+        assert_eq!(err.to_string(), "not found: task-123");
+    }
+
+    #[test]
+    fn store_error_cas_conflict_display() {
+        let err = StoreError::CasConflict(5, "task-123".into());
+        assert_eq!(
+            err.to_string(),
+            "CAS conflict after 5 retries for task task-123"
+        );
+    }
+
+    #[test]
+    fn store_error_update_aborted_display() {
+        let err = StoreError::UpdateAborted("invalid state transition".into());
+        assert_eq!(err.to_string(), "update aborted: invalid state transition");
+    }
+
+    #[test]
+    fn store_error_from_serde() {
+        let serde_err = serde_json::from_str::<String>("not-json").unwrap_err();
+        let err = StoreError::from(serde_err);
+        assert!(err.to_string().starts_with("serialization:"));
+    }
+
+    #[test]
+    fn max_cas_retries_is_five() {
+        assert_eq!(MAX_CAS_RETRIES, 5);
+    }
+
+    #[test]
+    fn bucket_names_use_wasm_af_prefix() {
+        assert_eq!(BUCKET_TASKS, "wasm-af-tasks");
+        assert_eq!(BUCKET_AUDIT, "wasm-af-audit");
+        assert_eq!(BUCKET_PAYLOADS, "wasm-af-payloads");
+    }
+}

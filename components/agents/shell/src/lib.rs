@@ -51,3 +51,60 @@ impl Guest for ShellAgent {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_default_command_is_empty() {
+        let input: ShellInput = serde_json::from_str("{}").unwrap();
+        assert!(input.command.is_empty());
+    }
+
+    #[test]
+    fn input_with_command() {
+        let input: ShellInput =
+            serde_json::from_str(r#"{"command":"ls -la /tmp"}"#).unwrap();
+        assert_eq!(input.command, "ls -la /tmp");
+    }
+
+    #[test]
+    fn output_success_serialization() {
+        let output = ShellOutput {
+            stdout: "file.txt\n".into(),
+            stderr: String::new(),
+            exit_code: 0,
+        };
+        let json: serde_json::Value = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["stdout"], "file.txt\n");
+        assert_eq!(json["stderr"], "");
+        assert_eq!(json["exit_code"], 0);
+    }
+
+    #[test]
+    fn output_error_serialization() {
+        let output = ShellOutput {
+            stdout: String::new(),
+            stderr: "command not found".into(),
+            exit_code: 127,
+        };
+        let json: serde_json::Value = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["exit_code"], 127);
+        assert_eq!(json["stderr"], "command not found");
+    }
+
+    #[test]
+    fn output_round_trip() {
+        let output = ShellOutput {
+            stdout: "hello".into(),
+            stderr: "warn".into(),
+            exit_code: 1,
+        };
+        let json = serde_json::to_string(&output).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["stdout"], "hello");
+        assert_eq!(v["stderr"], "warn");
+        assert_eq!(v["exit_code"], 1);
+    }
+}

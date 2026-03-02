@@ -760,3 +760,292 @@ impl Orchestrator {
             .await;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_af_taskstate::{Step, StepStatus};
+
+    fn make_step(id: &str, agent: &str, deps: &[&str]) -> Step {
+        Step {
+            id: id.into(),
+            agent_type: agent.into(),
+            input_key: format!("{id}.input"),
+            output_key: format!("{id}.output"),
+            depends_on: deps.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn make_step_with_status(id: &str, status: StepStatus) -> Step {
+        Step {
+            id: id.into(),
+            agent_type: "test".into(),
+            status,
+            ..Default::default()
+        }
+    }
+
+    // ---- build_dag ----
+
+    #[test]
+    fn build_dag_linear_chain() {
+        let plan = vec![
+            make_step("a", "router", &[]),
+            make_step("b", "shell", &["a"]),
+            make_step("c", "responder", &["b"]),
+        ];
+        let g = build_dag(&plan).unwrap();
+        let ready = g.ready(&HashSet::new());
+        assert_eq!(ready, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn build_dag_parallel_fan_out() {
+        let plan = vec![
+            make_step("a", "router", &[]),
+            make_step("b", "shell", &["a"]),
+            make_step("c", "memory", &["a"]),
+        ];
+        let g = build_dag(&plan).unwrap();
+        let completed: HashSet<String> = ["a".into()].into();
+        let mut ready = g.ready(&completed);
+        ready.sort();
+        assert_eq!(ready, vec!["b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn build_dag_diamond_join() {
+        let plan = vec![
+            make_step("a", "router", &[]),
+            make_step("b", "shell", &["a"]),
+            make_step("c", "memory", &["a"]),
+            make_step("d", "responder", &["b", "c"]),
+        ];
+        let g = build_dag(&plan).unwrap();
+        let completed: HashSet<String> = ["a".into(), "b".into()].into();
+        let ready = g.ready(&completed);
+        assert_eq!(ready, vec!["c".to_string()], "d should wait for both b and c");
+    }
+
+    #[test]
+    fn build_dag_empty_plan() {
+        let g = build_dag(&[]).unwrap();
+        assert!(g.ready(&HashSet::new()).is_empty());
+    }
+
+    #[test]
+    fn build_dag_unknown_dependency_errors() {
+        let plan = vec![make_step("a", "shell", &["ghost"])];
+        assert!(build_dag(&plan).is_err());
+    }
+
+    #[test]
+    fn build_dag_single_step_no_deps() {
+        let plan = vec![make_step("only", "router", &[])];
+        let g = build_dag(&plan).unwrap();
+        let ready = g.ready(&HashSet::new());
+        assert_eq!(ready, vec!["only".to_string()]);
+    }
+
+    #[test]
+    fn build_dag_all_independent() {
+        let plan = vec![
+            make_step("a", "shell", &[]),
+            make_step("b", "memory", &[]),
+            make_step("c", "router", &[]),
+        ];
+        let g = build_dag(&plan).unwrap();
+        let mut ready = g.ready(&HashSet::new());
+        ready.sort();
+        assert_eq!(ready, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+    }
+
+    // ---- step_index ----
+
+    #[test]
+    fn step_index_first_element() {
+        let plan = vec![
+            make_step("a", "router", &[]),
+            make_step("b", "shell", &[]),
+        ];
+        assert_eq!(step_index(&plan, "a"), Some(0));
+    }
+
+    #[test]
+    fn step_index_second_element() {
+        let plan = vec![
+            make_step("a", "router", &[]),
+            make_step("b", "shell", &[]),
+        ];
+        assert_eq!(step_index(&plan, "b"), Some(1));
+    }
+
+    #[test]
+    fn step_index_not_found() {
+        let plan = vec![make_step("a", "router", &[])];
+        assert_eq!(step_index(&plan, "ghost"), None);
+    }
+
+    #[test]
+    fn step_index_empty_plan() {
+        assert_eq!(step_index(&[], "a"), None);
+    }
+
+    // ---- plan_status_sets ----
+
+    #[test]
+    fn plan_status_sets_empty() {
+        let (completed, non_disp) = plan_status_sets(&[]);
+        assert!(completed.is_empty());
+        assert!(non_disp.is_empty());
+    }
+
+    #[test]
+    fn plan_status_sets_completed() {
+        let plan = vec![
+            make_step_with_status("a", StepStatus::Completed),
+            make_step_with_status("b", StepStatus::Completed),
+        ];
+        let (completed, non_disp) = plan_status_sets(&plan);
+        assert_eq!(completed.len(), 2);
+        assert!(completed.contains("a"));
+        assert!(completed.contains("b"));
+        assert!(non_disp.is_empty());
+    }
+
+    #[test]
+    fn plan_status_sets_failed_is_non_dispatchable() {
+        let plan = vec![make_step_with_status("a", StepStatus::Failed)];
+        let (completed, non_disp) = plan_status_sets(&plan);
+        assert!(completed.is_empty());
+        assert!(non_disp.contains("a"));
+    }
+
+    #[test]
+    fn plan_status_sets_denied_is_non_dispatchable() {
+        let plan = vec![make_step_with_status("a", StepStatus::Denied)];
+        let (completed, non_disp) = plan_status_sets(&plan);
+        assert!(completed.is_empty());
+        assert!(non_disp.contains("a"));
+    }
+
+    #[test]
+    fn plan_status_sets_awaiting_is_non_dispatchable() {
+        let plan = vec![make_step_with_status("a", StepStatus::AwaitingApproval)];
+        let (completed, non_disp) = plan_status_sets(&plan);
+        assert!(completed.is_empty());
+        assert!(non_disp.contains("a"));
+    }
+
+    #[test]
+    fn plan_status_sets_pending_and_running_in_neither_set() {
+        let plan = vec![
+            make_step_with_status("a", StepStatus::Pending),
+            make_step_with_status("b", StepStatus::Running),
+        ];
+        let (completed, non_disp) = plan_status_sets(&plan);
+        assert!(completed.is_empty());
+        assert!(non_disp.is_empty());
+    }
+
+    #[test]
+    fn plan_status_sets_mixed_statuses() {
+        let plan = vec![
+            make_step_with_status("a", StepStatus::Completed),
+            make_step_with_status("b", StepStatus::Failed),
+            make_step_with_status("c", StepStatus::Pending),
+            make_step_with_status("d", StepStatus::AwaitingApproval),
+            make_step_with_status("e", StepStatus::Running),
+            make_step_with_status("f", StepStatus::Denied),
+        ];
+        let (completed, non_disp) = plan_status_sets(&plan);
+        assert_eq!(completed, HashSet::from(["a".into()]));
+        assert_eq!(non_disp, HashSet::from(["b".into(), "d".into(), "f".into()]));
+    }
+
+    // ---- collapse_values ----
+
+    #[test]
+    fn collapse_single_value() {
+        assert_eq!(collapse_values(vec!["hello".into()]), "hello");
+    }
+
+    #[test]
+    fn collapse_multiple_values_produces_json_array() {
+        let result = collapse_values(vec!["a".into(), "b".into(), "c".into()]);
+        let parsed: Vec<String> = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn collapse_two_values_produces_json_array() {
+        let result = collapse_values(vec!["x".into(), "y".into()]);
+        let parsed: Vec<String> = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn collapse_single_empty_string() {
+        assert_eq!(collapse_values(vec!["".into()]), "");
+    }
+
+    #[test]
+    fn collapse_single_json_payload_preserved() {
+        let json_str = r#"{"key":"value"}"#.to_string();
+        assert_eq!(collapse_values(vec![json_str.clone()]), json_str);
+    }
+
+    // ---- integration: build_dag + plan_status_sets dispatching ----
+
+    #[test]
+    fn dispatch_logic_skips_non_dispatchable() {
+        let plan = vec![
+            make_step_with_status("a", StepStatus::Completed),
+            Step {
+                id: "b".into(),
+                agent_type: "shell".into(),
+                status: StepStatus::Failed,
+                depends_on: vec!["a".into()],
+                ..Default::default()
+            },
+            Step {
+                id: "c".into(),
+                agent_type: "memory".into(),
+                status: StepStatus::Pending,
+                depends_on: vec!["a".into()],
+                ..Default::default()
+            },
+        ];
+        let g = build_dag(&plan).unwrap();
+        let (completed, non_disp) = plan_status_sets(&plan);
+        let ready_ids = g.ready(&completed);
+        let dispatchable: Vec<String> = ready_ids
+            .into_iter()
+            .filter(|id| !non_disp.contains(id))
+            .collect();
+        assert_eq!(dispatchable, vec!["c".to_string()]);
+    }
+
+    #[test]
+    fn dispatch_logic_empty_when_blocked() {
+        let plan = vec![
+            make_step_with_status("a", StepStatus::AwaitingApproval),
+            Step {
+                id: "b".into(),
+                agent_type: "shell".into(),
+                status: StepStatus::Pending,
+                depends_on: vec!["a".into()],
+                ..Default::default()
+            },
+        ];
+        let g = build_dag(&plan).unwrap();
+        let (completed, non_disp) = plan_status_sets(&plan);
+        let ready_ids = g.ready(&completed);
+        let dispatchable: Vec<String> = ready_ids
+            .into_iter()
+            .filter(|id| !non_disp.contains(id))
+            .collect();
+        assert!(dispatchable.is_empty(), "b should be blocked by a awaiting approval");
+    }
+}

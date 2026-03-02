@@ -85,3 +85,70 @@ impl Guest for FileOpsAgent {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn input_all_defaults() {
+        let input: FileOpsInput = serde_json::from_str("{}").unwrap();
+        assert!(input.op.is_empty());
+        assert!(input.path.is_empty());
+        assert!(input.content.is_empty());
+    }
+
+    #[test]
+    fn input_read_op() {
+        let input: FileOpsInput =
+            serde_json::from_str(r#"{"op":"read","path":"/tmp/test.txt"}"#).unwrap();
+        assert_eq!(input.op, "read");
+        assert_eq!(input.path, "/tmp/test.txt");
+    }
+
+    #[test]
+    fn input_write_op() {
+        let input: FileOpsInput =
+            serde_json::from_str(r#"{"op":"write","path":"/tmp/out.txt","content":"hello"}"#)
+                .unwrap();
+        assert_eq!(input.op, "write");
+        assert_eq!(input.content, "hello");
+    }
+
+    #[test]
+    fn output_success_serialization() {
+        let output = FileOpsOutput {
+            content: "file data".into(),
+            success: true,
+            error: String::new(),
+        };
+        let json: serde_json::Value = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["success"], true);
+        assert_eq!(json["content"], "file data");
+        assert_eq!(json["error"], "");
+    }
+
+    #[test]
+    fn output_error_serialization() {
+        let output = FileOpsOutput {
+            content: String::new(),
+            success: false,
+            error: "permission denied".into(),
+        };
+        let json: serde_json::Value = serde_json::to_value(&output).unwrap();
+        assert_eq!(json["success"], false);
+        assert_eq!(json["error"], "permission denied");
+    }
+
+    #[test]
+    fn output_unknown_op_format() {
+        let output = FileOpsOutput {
+            content: String::new(),
+            success: false,
+            error: "unknown op: delete; expected read or write".into(),
+        };
+        let json: serde_json::Value = serde_json::to_value(&output).unwrap();
+        assert!(!json["error"].as_str().unwrap().is_empty());
+        assert!(!output.success);
+    }
+}
