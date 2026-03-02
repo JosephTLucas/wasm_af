@@ -2,7 +2,7 @@
 
 **A security-first AI agent orchestration framework built on WebAssembly and [Extism](https://extism.org/).**
 
-WASM_AF leverages the sandboxed, ephemeral nature of WebAssembly to create a zero-trust AI agent runtime. Agents are WASM plugins — isolated by default, granted capabilities by policy, and destroyed when their work is done. No ambient authority. No lateral movement. No leaked secrets.
+WASM_AF leverages the sandboxed, ephemeral nature of WebAssembly to create a zero-trust AI agent runtime. Agents are WASM plugins that are isolated by default, granted capabilities by policy, and destroyed when their work is done.
 
 [![Demo](wasm_demo.gif)](http://jolucas1.nvidia.com:4000/a/y7XzQyKOlKWvOdI3)
 
@@ -24,11 +24,7 @@ For API inference, set `NV_API_KEY` in a `.env` file at the repo root (gitignore
 
 ## Why WASM + AI Agents?
 
-Most agent frameworks enforce security through **convention**: configure your tools carefully, don't pass credentials to agents that don't need them, restrict network access through application-level checks. These conventions work — until a prompt injection, a misconfiguration, or a supply-chain compromise bypasses them. The boundary between "allowed" and "not allowed" is maintained by the same process that the attacker controls.
-
-WebAssembly enforces security through **construction**. A WASM module **cannot** touch the filesystem, network, or environment unless explicitly granted access by the host. This isn't a policy layer bolted on top — it's a property of the execution model itself. A prompt injection can manipulate what an agent *tries* to do, but it cannot expand what the sandbox *permits*.
-
-WASM_AF is built on this premise: capabilities granted structurally at instantiation time, not checked at call time.
+Most agent frameworks enforce security through **convention**: configure your tools carefully, don't pass credentials to agents that don't need them, restrict network access through application-level checks. This WebAssembly framework enforces security through **construction**. A WASM module **cannot** touch the filesystem, network, or environment unless explicitly granted access by the orchestrator.
 
 ---
 
@@ -98,27 +94,23 @@ WASM_AF is built on this premise: capabilities granted structurally at instantia
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The orchestrator is a single Go binary that embeds the [Extism](https://extism.org/) WASM runtime (powered by [wazero](https://wazero.io/) — pure Go, no CGO). For each task step, it creates an Extism plugin instance with exactly the capabilities that step needs, calls the agent's `execute` export, reads the result, and destroys the plugin. The WASM instance, its memory, and its capabilities cease to exist.
+The orchestrator is a single Go binary that embeds the [Extism](https://extism.org/) WASM runtime (powered by [wazero](https://wazero.io/)). For each task step, it creates an Extism plugin instance with exactly the capabilities that step needs, calls the agent's `execute` export, reads the result, and destroys the plugin.
 
-NATS JetStream KV provides task state persistence and an immutable audit trail. It's the only external dependency.
+NATS JetStream KV provides task state persistence and an immutable audit trail.
 
 ---
 
 ## Core Principles
 
-**Policy-driven capability grants.** An agent does not declare what it needs — the orchestrator decides what it gets. OPA evaluates every step before a plugin is created. Structured decisions from Rego (`allowed_hosts`, `max_memory_pages`, `timeout_sec`, `host_functions`, `config`, `allowed_paths`, `requires_approval`) flow directly into the Extism manifest. Deny-by-default; the orchestrator won't start without `OPA_POLICY`.
+**Policy-driven capability grants.** [Open Policy Agent (OPA)](https://www.openpolicyagent.org/) is used to evaluate capability grants and gate every step of execution. Structured decisions from Rego (`allowed_hosts`, `max_memory_pages`, `timeout_sec`, `host_functions`, `config`, `allowed_paths`, `requires_approval`) flow directly into the Extism manifest. Deny-by-default; the orchestrator won't start without `OPA_POLICY`.
 
-**Per-instance scoping.** Each plugin gets its own manifest. In the fan-out example, three url-fetch instances run in parallel — each scoped to exactly one domain. Instance A cannot reach Instance B's domain. The allowlist is data-driven and live-updatable via NATS KV:
-
-```bash
-nats kv put wasm-af-config allowed-fetch-domains "webassembly.org,wasmcloud.com"
-```
+**Per-instance scoping.** Each plugin gets its own manifest. In the fan-out example, three url-fetch instances run in parallel — each scoped to exactly one domain. Instance A cannot reach Instance B's domain to illustrate how we can dynamically create and modify domain allowlists.
 
 **No inter-agent communication.** Agents do not talk to each other. The orchestrator mediates all data flow, stores intermediate results in NATS KV, and passes context from ancestor steps to their dependents.
 
 **Host functions as capabilities.** LLM inference, shell execution, email delivery, and KV storage are host functions injected into plugins that need them. A plugin without the `llm_complete` import cannot call it — the function doesn't exist in the module's address space. Credentials (API keys, SMTP) live in Go closures; they are never written to WASM memory.
 
-**Ephemeral lifecycle.** Each plugin is `NewPlugin` → `Call("execute")` → `Close` within a single Go function scope. Between steps, there is no process to attack, no memory to dump. An agent that doesn't exist can't be exploited.
+**Ephemeral lifecycle.** Each plugin is `NewPlugin` → `Call("execute")` → `Close` within a single Go function scope. An agent or runtime that doesn't exist can't be exploited.
 
 **Bring your own agent.** External WASM modules can be uploaded to a running orchestrator via `POST /agents`. They are validated (must export `execute`), stored on disk, and registered with a forced `capability: "untrusted"`. The BYOA Rego policy tier (`policies/byoa.rego`) applies strict sandbox defaults — no host functions, no network, 4 MiB memory, 10s timeout, mandatory approval — ensuring that tenant-supplied code runs in the tightest possible sandbox without any per-agent policy authoring. An approved-list in OPA data (live-updatable via NATS KV) controls which external agents are allowed to execute. Registrations persist across restarts via NATS KV and sync across replicas.
 
@@ -280,30 +272,6 @@ make reply-all-demo                    # parallel DAG: jailbreak + approval (int
 
 ```bash
 cd examples/prompt-injection && make demo    # requires Ollama (pulls model automatically)
-```
-
-### Manual Step-by-Step
-
-```bash
-cd components && cargo build --release && cd ..
-go build -o ./bin/orchestrator ./provider/orchestrator/
-nats-server -js &
-
-OPA_POLICY=./examples/fan-out-summarizer \
-OPA_DATA=./examples/fan-out-summarizer/data.json \
-AGENT_REGISTRY_FILE=./examples/fan-out-summarizer/agents.json \
-LLM_MODE=mock \
-./bin/orchestrator &
-
-curl -X POST localhost:8080/tasks \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "type": "fan-out-summarizer",
-    "query": "Compare these WebAssembly projects",
-    "context": {"urls": "https://webassembly.org,https://wasmcloud.com,https://bytecodealliance.org"}
-  }'
-
-curl localhost:8080/tasks/<task-id> | jq .
 ```
 
 ---
