@@ -81,7 +81,9 @@ impl WasiHttpView for HostState {
 
 #[derive(Debug, Clone, Default)]
 pub struct StepMeta {
+    #[allow(dead_code)]
     pub task_id: String,
+    #[allow(dead_code)]
     pub step_id: String,
     pub agent_type: String,
 }
@@ -116,16 +118,12 @@ impl Default for LlmState {
 
 #[derive(Clone)]
 pub struct KvState {
-    pub nats_client: Option<async_nats::Client>,
     pub memory_kv: Option<std::sync::Arc<async_nats::jetstream::kv::Store>>,
 }
 
 impl Default for KvState {
     fn default() -> Self {
-        Self {
-            nats_client: None,
-            memory_kv: None,
-        }
+        Self { memory_kv: None }
     }
 }
 

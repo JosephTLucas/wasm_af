@@ -27,7 +27,6 @@ pub struct Orchestrator {
     pub plugin_timeout: Duration,
     pub plugin_max_mem_pages: u64,
 
-    pub nats_client: async_nats::Client,
     pub config_kv: async_nats::jetstream::kv::Store,
     pub approval_webhook_url: String,
     pub approval_timeout_sec: u64,

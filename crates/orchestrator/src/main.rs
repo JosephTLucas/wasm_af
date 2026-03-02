@@ -191,7 +191,6 @@ async fn main() -> anyhow::Result<()> {
         registry: registry.clone(),
         llm_state,
         kv_state: host::KvState {
-            nats_client: Some(nats_client.clone()),
             memory_kv: Some(std::sync::Arc::new(memory_kv)),
         },
         exec_state,
@@ -199,7 +198,6 @@ async fn main() -> anyhow::Result<()> {
         email_state,
         plugin_timeout: Duration::from_secs(plugin_timeout_sec),
         plugin_max_mem_pages: plugin_max_mem_pages,
-        nats_client: nats_client.clone(),
         config_kv,
         approval_webhook_url: env_or("APPROVAL_WEBHOOK_URL", ""),
         approval_timeout_sec: env_or_u64("APPROVAL_TIMEOUT_SEC", 0),
