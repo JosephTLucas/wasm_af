@@ -205,8 +205,9 @@ approval_reason := sprintf("shell command '%s' requires approval", [input.step.p
 
 # ── Taint-aware gates ─────────────────────────────────────────────────────
 # Helper: true when tainted data from the web is in ancestor context.
-_context_has_web_taint if { "web" in input.context_taint }
-_context_has_untrusted_taint if { "untrusted" in input.context_taint }
+_context_has_web_taint if "web" in input.context_taint
+_context_has_untrusted_taint if "untrusted" in input.context_taint
+
 _untrusted_declassify if {
 	count(input.agent.declassifies) > 0
 	input.agent.capability == "untrusted"
@@ -214,7 +215,7 @@ _untrusted_declassify if {
 
 # Require approval when web-tainted data flows into an LLM-calling agent,
 # UNLESS the agent is a declassifier (it must run on tainted data to strip labels).
-_is_declassifier if { count(input.agent.declassifies) > 0 }
+_is_declassifier if count(input.agent.declassifies) > 0
 
 requires_approval if {
 	data.config.taint_gates_enabled

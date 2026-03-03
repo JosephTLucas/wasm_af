@@ -1107,4 +1107,180 @@ mod tests {
             super::MAX_POLL_INTERVAL
         );
     }
+
+    // ---- Integration: plan → DAG validity ----
+
+    fn assert_plan_is_valid_dag(plan: &[Step]) {
+        let ids: Vec<String> = plan.iter().map(|s| s.id.clone()).collect();
+        let mut deps = std::collections::HashMap::new();
+        for s in plan {
+            if !s.depends_on.is_empty() {
+                deps.insert(s.id.clone(), s.depends_on.clone());
+            }
+        }
+        wasm_af_dag::Graph::new(&ids, &deps)
+            .expect("plan should form a valid DAG without cycles or dangling references");
+    }
+
+    #[test]
+    fn chat_plan_forms_valid_dag() {
+        let r = req("chat", "test message", vec![("message", "test")]);
+        let plan = build_plan(&r, "dag-test");
+        assert_plan_is_valid_dag(&plan);
+    }
+
+    #[test]
+    fn email_reply_plan_forms_valid_dag() {
+        let r = req(
+            "email-reply",
+            "reply",
+            vec![("message", "hi"), ("reply_to", "alice@example.com")],
+        );
+        let plan = build_plan(&r, "dag-test");
+        assert_plan_is_valid_dag(&plan);
+        assert_eq!(plan.len(), 3);
+    }
+
+    #[test]
+    fn reply_all_plan_forms_valid_dag_various_counts() {
+        for count in [1, 2, 3, 5, 10] {
+            let r = req(
+                "reply-all",
+                "reply all",
+                vec![("email_count", &count.to_string())],
+            );
+            let plan = build_plan(&r, &format!("dag-{count}"));
+            assert_plan_is_valid_dag(&plan);
+            assert_eq!(plan.len(), 1 + count * 2);
+        }
+    }
+
+    #[test]
+    fn generic_plan_with_complex_dag_is_valid() {
+        let steps_json = r#"[
+            {"agent_type": "url-fetch", "params": {"url": "https://a.com"}},
+            {"agent_type": "url-fetch", "params": {"url": "https://b.com"}},
+            {"agent_type": "summarizer", "depends_on": ["0", "1"]},
+            {"agent_type": "responder", "depends_on": ["2"]}
+        ]"#;
+        let r = req("generic", "", vec![("steps", steps_json)]);
+        let plan = build_plan(&r, "dag-test");
+        assert_plan_is_valid_dag(&plan);
+        assert_eq!(plan.len(), 4);
+        assert_eq!(
+            plan[2].depends_on,
+            vec!["dag-test-step-0", "dag-test-step-1"]
+        );
+    }
+
+    #[test]
+    fn generic_plan_single_step_forms_valid_dag() {
+        let r = req("unknown-type", "query", vec![("key", "value")]);
+        let plan = build_plan(&r, "dag-test");
+        assert_plan_is_valid_dag(&plan);
+        assert_eq!(plan.len(), 1);
+    }
+
+    #[test]
+    fn all_plan_steps_have_unique_ids() {
+        let cases = vec![
+            req("chat", "hello", vec![("message", "hello")]),
+            req(
+                "reply-all",
+                "reply",
+                vec![("email_count", "5"), ("message", "hi")],
+            ),
+            req(
+                "generic",
+                "",
+                vec![(
+                    "steps",
+                    r#"[{"agent_type":"a"},{"agent_type":"b","depends_on":["0"]}]"#,
+                )],
+            ),
+        ];
+        for r in cases {
+            let plan = build_plan(&r, "uid-test");
+            let ids: Vec<&str> = plan.iter().map(|s| s.id.as_str()).collect();
+            let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
+            assert_eq!(
+                ids.len(),
+                unique.len(),
+                "duplicate step IDs in plan for type {:?}",
+                r.task_type
+            );
+        }
+    }
+
+    #[test]
+    fn all_plan_steps_have_distinct_io_keys() {
+        let r = req(
+            "reply-all",
+            "reply",
+            vec![("email_count", "3"), ("message", "hi")],
+        );
+        let plan = build_plan(&r, "key-test");
+        let input_keys: std::collections::HashSet<&str> =
+            plan.iter().map(|s| s.input_key.as_str()).collect();
+        let output_keys: std::collections::HashSet<&str> =
+            plan.iter().map(|s| s.output_key.as_str()).collect();
+        assert_eq!(input_keys.len(), plan.len(), "input keys must be unique");
+        assert_eq!(output_keys.len(), plan.len(), "output keys must be unique");
+    }
+
+    #[test]
+    fn chat_plan_approval_gate_simulation() {
+        let r = req(
+            "chat",
+            "send email to alice",
+            vec![("message", "send email")],
+        );
+        let mut plan = build_plan(&r, "appr-test");
+        assert_plan_is_valid_dag(&plan);
+
+        // Simulate: steps 0,1 complete, step 2 (responder) awaits approval
+        plan[0].status = StepStatus::Completed;
+        plan[1].status = StepStatus::Completed;
+        plan[2].status = StepStatus::AwaitingApproval;
+
+        let ids: Vec<String> = plan.iter().map(|s| s.id.clone()).collect();
+        let mut deps = std::collections::HashMap::new();
+        for s in &plan {
+            if !s.depends_on.is_empty() {
+                deps.insert(s.id.clone(), s.depends_on.clone());
+            }
+        }
+        let g = wasm_af_dag::Graph::new(&ids, &deps).unwrap();
+
+        let completed: std::collections::HashSet<String> = plan
+            .iter()
+            .filter(|s| s.status == StepStatus::Completed)
+            .map(|s| s.id.clone())
+            .collect();
+        let non_disp: std::collections::HashSet<String> = plan
+            .iter()
+            .filter(|s| s.status == StepStatus::AwaitingApproval)
+            .map(|s| s.id.clone())
+            .collect();
+
+        let ready = g.ready(&completed);
+        let dispatchable: Vec<String> = ready
+            .into_iter()
+            .filter(|id| !non_disp.contains(id))
+            .collect();
+        assert!(
+            dispatchable.is_empty(),
+            "step 3 should be blocked while step 2 awaits approval"
+        );
+
+        // Simulate approval: step 2 completes
+        plan[2].status = StepStatus::Completed;
+        let completed: std::collections::HashSet<String> = plan
+            .iter()
+            .filter(|s| s.status == StepStatus::Completed)
+            .map(|s| s.id.clone())
+            .collect();
+        let ready = g.ready(&completed);
+        assert_eq!(ready.len(), 1, "step 3 should be ready after approval");
+    }
 }

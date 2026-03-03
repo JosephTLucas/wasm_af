@@ -1,4 +1,4 @@
-.PHONY: build build-orchestrator build-plugins wasmclaw lint fmt test demo wasmclaw-demo wasmclaw-demo-api wasmclaw-demo-real clean help
+.PHONY: build build-orchestrator build-plugins wasmclaw lint lint-check fmt test demo wasmclaw-demo wasmclaw-demo-api wasmclaw-demo-real clean install-hooks help
 
 BINDIR := bin
 
@@ -26,6 +26,21 @@ wasmclaw: build ## Build wasmclaw agents + orchestrator + runtimes
 lint: ## Run clippy on all Rust crates
 	cargo clippy --workspace -- -D warnings
 	@cd components && cargo clippy --workspace -- -D warnings
+
+lint-check: ## Run all CI lint checks locally (fmt + clippy + opa fmt)
+	cargo fmt --all --check
+	@cd components && cargo fmt --check
+	cargo clippy --workspace -- -D warnings
+	@HOST_TARGET=$$(rustc -vV | grep host | awk '{print $$2}'); \
+	 cd components && cargo clippy --target "$$HOST_TARGET" -- -D warnings
+	@if command -v opa >/dev/null 2>&1; then \
+	  BAD=""; \
+	  for f in $$(find . -name '*.rego' -not -path '*/target/*'); do \
+	    if ! opa fmt --fail "$$f" >/dev/null 2>&1; then BAD="$$BAD $$f"; fi; \
+	  done; \
+	  if [ -n "$$BAD" ]; then echo "opa fmt needed on:$$BAD"; exit 1; fi; \
+	  echo "opa fmt: ok"; \
+	else echo "opa not installed — skipping"; fi
 
 fmt: ## Format all Rust code
 	cargo fmt --all
@@ -59,6 +74,11 @@ reply-all-demo: wasmclaw ## Run reply-all parallel DAG demo
 	@cd examples/wasmclaw && make reply-all-demo
 
 ##@ Util
+
+install-hooks: ## Install git pre-commit hook (mirrors CI lint stage)
+	@cp hooks/pre-commit .git/hooks/pre-commit
+	@chmod +x .git/hooks/pre-commit
+	@echo "pre-commit hook installed"
 
 clean: ## Kill stale processes + clean build artifacts
 	@lsof -ti:8080 | xargs kill 2>/dev/null || true

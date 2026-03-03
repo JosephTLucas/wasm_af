@@ -758,7 +758,7 @@ impl Orchestrator {
             if !ancestor_set.contains(s.id.as_str()) {
                 continue;
             }
-            if state.results.get(&s.output_key).is_none() {
+            if !state.results.contains_key(&s.output_key) {
                 continue;
             }
             let key = self
@@ -1245,5 +1245,264 @@ mod tests {
             dispatchable.is_empty(),
             "b should be blocked by a awaiting approval"
         );
+    }
+
+    // ---- Integration: full dispatch cycle simulation ----
+
+    fn simulate_dispatch_cycle(plan: &[Step]) -> Vec<Vec<String>> {
+        let mut plan = plan.to_vec();
+        let mut batches = Vec::new();
+
+        loop {
+            let g = build_dag(&plan).unwrap();
+            let (completed, non_disp) = plan_status_sets(&plan);
+            let ready_ids = g.ready(&completed);
+            let dispatchable: Vec<String> = ready_ids
+                .into_iter()
+                .filter(|id| !non_disp.contains(id))
+                .collect();
+
+            if dispatchable.is_empty() {
+                break;
+            }
+
+            batches.push(dispatchable.clone());
+
+            for id in &dispatchable {
+                if let Some(idx) = plan.iter().position(|s| &s.id == id) {
+                    plan[idx].status = StepStatus::Completed;
+                }
+            }
+        }
+
+        batches
+    }
+
+    #[test]
+    fn full_cycle_chat_plan_dispatches_sequentially() {
+        let plan = vec![
+            make_step("s0", "memory", &[]),
+            make_step("s1", "router", &["s0"]),
+            make_step("s2", "responder", &["s1"]),
+            make_step("s3", "memory", &["s2"]),
+        ];
+        let batches = simulate_dispatch_cycle(&plan);
+        assert_eq!(batches.len(), 4, "linear chain should have 4 batches");
+        assert_eq!(batches[0], vec!["s0"]);
+        assert_eq!(batches[1], vec!["s1"]);
+        assert_eq!(batches[2], vec!["s2"]);
+        assert_eq!(batches[3], vec!["s3"]);
+    }
+
+    #[test]
+    fn full_cycle_reply_all_fan_out_parallel() {
+        let plan = vec![
+            make_step("s0", "email-read", &[]),
+            make_step("s1", "responder", &["s0"]),
+            make_step("s2", "email-send", &["s1"]),
+            make_step("s3", "responder", &["s0"]),
+            make_step("s4", "email-send", &["s3"]),
+        ];
+        let batches = simulate_dispatch_cycle(&plan);
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0], vec!["s0"]);
+        let mut batch1 = batches[1].clone();
+        batch1.sort();
+        assert_eq!(
+            batch1,
+            vec!["s1", "s3"],
+            "responders should run in parallel"
+        );
+        let mut batch2 = batches[2].clone();
+        batch2.sort();
+        assert_eq!(
+            batch2,
+            vec!["s2", "s4"],
+            "email-sends should run in parallel"
+        );
+    }
+
+    #[test]
+    fn full_cycle_diamond_dag() {
+        let plan = vec![
+            make_step("root", "router", &[]),
+            make_step("left", "web-search", &["root"]),
+            make_step("right", "shell", &["root"]),
+            make_step("join", "responder", &["left", "right"]),
+        ];
+        let batches = simulate_dispatch_cycle(&plan);
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0], vec!["root"]);
+        let mut batch1 = batches[1].clone();
+        batch1.sort();
+        assert_eq!(batch1, vec!["left", "right"]);
+        assert_eq!(batches[2], vec!["join"]);
+    }
+
+    #[test]
+    fn cycle_halts_when_step_fails() {
+        let plan = vec![
+            make_step_with_status("a", StepStatus::Completed),
+            Step {
+                id: "b".into(),
+                agent_type: "shell".into(),
+                status: StepStatus::Failed,
+                depends_on: vec!["a".into()],
+                ..Default::default()
+            },
+            Step {
+                id: "c".into(),
+                agent_type: "responder".into(),
+                status: StepStatus::Pending,
+                depends_on: vec!["b".into()],
+                ..Default::default()
+            },
+        ];
+        let batches = simulate_dispatch_cycle(&plan);
+        assert!(
+            batches.is_empty(),
+            "no steps should dispatch when blocked by a failed step"
+        );
+    }
+
+    #[test]
+    fn cycle_with_approval_gate_resumes_after_approval() {
+        let mut plan = vec![
+            make_step("s0", "memory", &[]),
+            make_step("s1", "email-send", &["s0"]),
+            make_step("s2", "responder", &["s1"]),
+        ];
+
+        // Batch 1: s0 dispatches and completes
+        plan[0].status = StepStatus::Completed;
+
+        // s1 goes to approval
+        plan[1].status = StepStatus::AwaitingApproval;
+
+        let g = build_dag(&plan).unwrap();
+        let (completed, non_disp) = plan_status_sets(&plan);
+        let ready = g.ready(&completed);
+        let dispatchable: Vec<String> = ready
+            .into_iter()
+            .filter(|id| !non_disp.contains(id))
+            .collect();
+        assert!(
+            dispatchable.is_empty(),
+            "s2 blocked while s1 awaits approval"
+        );
+
+        // Simulate approval: s1 goes back to Pending
+        plan[1].status = StepStatus::Pending;
+
+        let g = build_dag(&plan).unwrap();
+        let (completed, non_disp) = plan_status_sets(&plan);
+        let ready = g.ready(&completed);
+        let dispatchable: Vec<String> = ready
+            .into_iter()
+            .filter(|id| !non_disp.contains(id))
+            .collect();
+        assert_eq!(dispatchable, vec!["s1"], "s1 should be re-dispatchable");
+
+        // s1 completes
+        plan[1].status = StepStatus::Completed;
+
+        let g = build_dag(&plan).unwrap();
+        let (completed, non_disp) = plan_status_sets(&plan);
+        let ready = g.ready(&completed);
+        let dispatchable: Vec<String> = ready
+            .into_iter()
+            .filter(|id| !non_disp.contains(id))
+            .collect();
+        assert_eq!(
+            dispatchable,
+            vec!["s2"],
+            "s2 should dispatch after s1 completes"
+        );
+    }
+
+    #[test]
+    fn cycle_parallel_with_one_branch_denied() {
+        let plan = vec![
+            make_step_with_status("root", StepStatus::Completed),
+            Step {
+                id: "a".into(),
+                agent_type: "web-search".into(),
+                status: StepStatus::Completed,
+                depends_on: vec!["root".into()],
+                ..Default::default()
+            },
+            Step {
+                id: "b".into(),
+                agent_type: "shell".into(),
+                status: StepStatus::Denied,
+                depends_on: vec!["root".into()],
+                ..Default::default()
+            },
+            Step {
+                id: "join".into(),
+                agent_type: "responder".into(),
+                status: StepStatus::Pending,
+                depends_on: vec!["a".into(), "b".into()],
+                ..Default::default()
+            },
+        ];
+        let g = build_dag(&plan).unwrap();
+        let (completed, non_disp) = plan_status_sets(&plan);
+        let ready = g.ready(&completed);
+        let dispatchable: Vec<String> = ready
+            .into_iter()
+            .filter(|id| !non_disp.contains(id))
+            .collect();
+        assert!(
+            dispatchable.is_empty(),
+            "join should not dispatch when one dependency is denied"
+        );
+    }
+
+    #[test]
+    fn terminal_state_detection_all_completed() {
+        let plan = vec![
+            make_step_with_status("a", StepStatus::Completed),
+            make_step_with_status("b", StepStatus::Completed),
+            make_step_with_status("c", StepStatus::Completed),
+        ];
+        let all_completed = plan.iter().all(|s| s.status == StepStatus::Completed);
+        let has_awaiting = plan
+            .iter()
+            .any(|s| s.status == StepStatus::AwaitingApproval);
+        assert!(all_completed);
+        assert!(!has_awaiting);
+    }
+
+    #[test]
+    fn terminal_state_detection_mixed_failure() {
+        let plan = vec![
+            make_step_with_status("a", StepStatus::Completed),
+            make_step_with_status("b", StepStatus::Failed),
+            make_step_with_status("c", StepStatus::Pending),
+        ];
+        let all_completed = plan.iter().all(|s| s.status == StepStatus::Completed);
+        let has_failed = plan
+            .iter()
+            .any(|s| s.status == StepStatus::Failed || s.status == StepStatus::Denied);
+        assert!(!all_completed);
+        assert!(has_failed);
+    }
+
+    #[test]
+    fn terminal_state_detection_awaiting_approval() {
+        let plan = vec![
+            make_step_with_status("a", StepStatus::Completed),
+            make_step_with_status("b", StepStatus::AwaitingApproval),
+        ];
+        let has_awaiting = plan
+            .iter()
+            .any(|s| s.status == StepStatus::AwaitingApproval);
+        assert!(has_awaiting);
+    }
+
+    #[test]
+    fn collapse_values_empty_returns_empty_string() {
+        assert_eq!(collapse_values(vec![]), String::new());
     }
 }

@@ -622,35 +622,25 @@ test_responder_no_approval if {
 # ── Taint: brave_api_key config injection ─────────────────────────────────────
 
 test_web_search_receives_brave_api_key if {
-	config.brave_api_key == "BSA-test-key" with input as {
-		"step": {"agent_type": "web-search", "params": {}},
-	}
+	config.brave_api_key == "BSA-test-key" with input as {"step": {"agent_type": "web-search", "params": {}}}
 		with data.secrets.brave_api_key as "BSA-test-key"
 }
 
 test_web_search_no_brave_key_when_secret_missing if {
-	not config.brave_api_key with input as {
-		"step": {"agent_type": "web-search", "params": {}},
-	}
+	not config.brave_api_key with input as {"step": {"agent_type": "web-search", "params": {}}}
 }
 
 test_web_search_mock_mode_when_no_brave_key if {
-	config.mock_results == "true" with input as {
-		"step": {"agent_type": "web-search", "params": {}},
-	}
+	config.mock_results == "true" with input as {"step": {"agent_type": "web-search", "params": {}}}
 }
 
 test_web_search_no_mock_when_brave_key_present if {
-	not config.mock_results with input as {
-		"step": {"agent_type": "web-search", "params": {}},
-	}
+	not config.mock_results with input as {"step": {"agent_type": "web-search", "params": {}}}
 		with data.secrets.brave_api_key as "BSA-test-key"
 }
 
 test_shell_does_not_receive_brave_key if {
-	not config.brave_api_key with input as {
-		"step": {"agent_type": "shell", "params": {"command": "ls"}},
-	}
+	not config.brave_api_key with input as {"step": {"agent_type": "shell", "params": {"command": "ls"}}}
 		with data.secrets.brave_api_key as "BSA-test-key"
 		with data.config.shell_enabled as true
 		with data.config.allowed_commands as ["ls"]

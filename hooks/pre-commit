@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook that mirrors the GitLab CI lint stage.
+# Install with: make install-hooks
+#
+# Checks (in order, fast-fail):
+#   1. cargo fmt   — both workspaces
+#   2. opa fmt     — all .rego files (skipped if opa not installed)
+#   3. cargo clippy — both workspaces
+#
+set -euo pipefail
+
+RED='\033[0;31m'
+GRN='\033[0;32m'
+YLW='\033[0;33m'
+RST='\033[0m'
+
+fail() { echo -e "${RED}pre-commit: $1${RST}" >&2; exit 1; }
+pass() { echo -e "${GRN}  ✓ $1${RST}"; }
+warn() { echo -e "${YLW}  ⚠ $1${RST}"; }
+
+echo "pre-commit: running lint checks..."
+
+# ── 1. Rust formatting ──────────────────────────────────────────────────────
+
+cargo fmt --all --check --quiet 2>/dev/null \
+    || fail "cargo fmt (root workspace): run 'cargo fmt --all' to fix"
+pass "cargo fmt (root)"
+
+(cd components && cargo fmt --check --quiet 2>/dev/null) \
+    || fail "cargo fmt (components): run 'cd components && cargo fmt --all' to fix"
+pass "cargo fmt (components)"
+
+# ── 2. OPA formatting ───────────────────────────────────────────────────────
+
+if command -v opa &>/dev/null; then
+    BAD=""
+    while IFS= read -r -d '' f; do
+        if ! opa fmt --fail "$f" >/dev/null 2>&1; then
+            BAD="$BAD $f"
+        fi
+    done < <(find . -name '*.rego' -not -path '*/target/*' -print0)
+
+    if [ -n "$BAD" ]; then
+        fail "opa fmt needed on:$BAD\n       run: opa fmt -w <file>"
+    fi
+    pass "opa fmt"
+else
+    warn "opa not installed — skipping Rego format check"
+fi
+
+# ── 3. Clippy ────────────────────────────────────────────────────────────────
+
+cargo clippy --workspace --quiet -- -D warnings 2>/dev/null \
+    || fail "cargo clippy (root workspace): run 'cargo clippy --workspace' to see errors"
+pass "clippy (root)"
+
+HOST_TARGET=$(rustc -vV | grep host | awk '{print $2}')
+(cd components && cargo clippy --target "$HOST_TARGET" --quiet -- -D warnings 2>/dev/null) \
+    || fail "cargo clippy (components): run 'cd components && cargo clippy' to see errors"
+pass "clippy (components)"
+
+echo -e "${GRN}pre-commit: all checks passed${RST}"

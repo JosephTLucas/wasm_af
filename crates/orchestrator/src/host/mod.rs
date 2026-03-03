@@ -339,11 +339,24 @@ fn real_llm(
                 }
                 let api_resp: serde_json::Value =
                     r.json().map_err(|e| format!("json parse: {e}"))?;
-                let content = api_resp["choices"][0]["message"]["content"]
-                    .as_str()
-                    .unwrap_or("")
+                let content = api_resp
+                    .get("choices")
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("message"))
+                    .and_then(|m| m.get("content"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        format!(
+                            "unexpected API response structure: missing choices[0].message.content in {}",
+                            &api_resp.to_string()[..api_resp.to_string().len().min(200)]
+                        )
+                    })?
                     .to_string();
-                let model_used = api_resp["model"].as_str().unwrap_or(model).to_string();
+                let model_used = api_resp
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(model)
+                    .to_string();
                 return Ok(host_llm::LlmResponse {
                     content,
                     model_used,

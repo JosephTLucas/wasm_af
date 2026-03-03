@@ -43,11 +43,13 @@ sequenceDiagram
     Orchestrator->>NATS: persist task state
 
     loop for each ready step (parallel)
-        Orchestrator->>OPA: evaluate step capabilities
-        OPA-->>Orchestrator: allowed host functions, limits
+        Orchestrator->>Orchestrator: compute context_taint from ancestor outputs
+        Orchestrator->>OPA: evaluate step (capabilities + context_taint)
+        OPA-->>Orchestrator: allowed host functions, limits, approval
         Orchestrator->>Agent: instantiate with selective Linker
         Agent-->>Orchestrator: execute() result
         Note right of Agent: instance dropped immediately
+        Orchestrator->>Orchestrator: store result + propagate taint labels
         Orchestrator->>NATS: write result + audit entry
     end
 
@@ -64,7 +66,7 @@ NATS JetStream KV provides task state persistence and an immutable audit trail.
 
 ## Core Principles
 
-**Policy-driven capability grants.** [Open Policy Agent (OPA)](https://www.openpolicyagent.org/) evaluates capability grants and gates every step of execution. Structured decisions from Rego (`allowed_hosts`, `max_memory_pages`, `timeout_sec`, `host_functions`, `config`, `allowed_paths`, `requires_approval`) control which WIT interfaces are linked into each component instance. Deny-by-default; the orchestrator won't start without `OPA_POLICY`.
+**Policy-driven capability grants.** [Open Policy Agent (OPA)](https://www.openpolicyagent.org/) evaluates capability grants and gates every step of execution. Structured decisions from Rego (`allowed_hosts`, `max_memory_pages`, `timeout_sec`, `host_functions`, `config`, `allowed_paths`, `requires_approval`) control which WIT interfaces are linked into each component instance. The policy input includes `context_taint` — the set of provenance labels from ancestor steps — so Rego rules can deny or require approval based on data origin. Deny-by-default; the orchestrator won't start without `OPA_POLICY`.
 
 **Per-instance scoping.** Each component gets its own `Linker` and `Store`. When multiple url-fetch instances run in parallel, each is scoped to exactly one domain.
 
@@ -82,6 +84,24 @@ NATS JetStream KV provides task state persistence and an immutable audit trail.
 # In your policy.rego — approval is opt-in per agent type:
 requires_approval if { input.step.agent_type == "email-send" }
 approval_reason := "email delivery requires human approval" if { input.step.agent_type == "email-send" }
+```
+
+**Taint tracking.** Data provenance labels (`web`, `external`, `untrusted`) propagate through the DAG alongside step outputs. When an agent like `url-fetch` or `web-search` produces data from an external source, that output is labeled with a taint. The taint flows to every downstream step that consumes the data. OPA policy can deny execution, require approval, or apply other controls based on which taint labels are present in a step's context. Trusted platform agents can *declassify* taint — a `summarizer` that processes raw web content through an LLM strips the `web` label from its output, so downstream steps see clean data. BYOA agents are always tainted `untrusted` and can never declassify.
+
+```rego
+# Block web-sourced data from reaching shell execution:
+allow if {
+    input.step.agent_type == "shell"
+    not _context_has_web_taint
+    ...
+}
+
+# Require approval when web-tainted data flows to an LLM:
+requires_approval if {
+    "web" in input.context_taint
+    "llm_complete" in input.agent.host_functions
+    not _is_declassifier
+}
 ```
 
 ---
@@ -182,13 +202,14 @@ wasm_af/
     ├── prompt-injection/           # security demo: injection fails structurally
     └── wasmclaw/                   # personal AI assistant with two-tier execution
         ├── lib/setup.sh            # shared infra: build, NATS, orchestrator, cleanup
-        ├── run.sh                  # main demo (skills, security, approval gate)
+        ├── run.sh                  # main demo (skills, security, approval, taint tracking)
         ├── reply-all-demo.sh       # parallel DAG demo (jailbreak + approval)
-        ├── agents.json             # agent registry
-        ├── policy.rego             # step policy
+        ├── taint-demo.sh           # taint tracking demo (deny, approval gate, declassification)
+        ├── agents.json             # agent registry (includes output_taint, declassifies)
+        ├── policy.rego             # step policy (capability gates + taint-aware rules)
         ├── submit.rego             # submission policy
-        ├── data.json               # allowlists, feature flags, jailbreak patterns
-        ├── *_test.rego             # 80 OPA tests (opa test .)
+        ├── data.json               # allowlists, feature flags, taint gates, jailbreak patterns
+        ├── *_test.rego             # 92 OPA tests (opa test .)
         └── Makefile
 ```
 
@@ -203,6 +224,8 @@ cd examples/wasmclaw
 make demo                              # mock LLM (deterministic, no deps)
 LLM_MODE=api make demo                 # NVIDIA NIM API (needs NV_API_KEY)
 make reply-all-demo                    # parallel DAG: jailbreak + approval (interactive Y/n)
+make taint-demo                        # taint tracking: deny, approval gate, declassification
+                                       #   (needs NV_API_KEY + BRAVE_API_KEY in .env)
 ```
 
 ### PII Pipeline (Bring Your Own Agent)
@@ -227,7 +250,7 @@ cd examples/prompt-injection && make demo    # requires Ollama (pulls model auto
 
 | Variable | Default | Description |
 |---|---|---|
-| `LISTEN_ADDR` | `:8080` | HTTP server listen address |
+| `LISTEN_ADDR` | `0.0.0.0:8080` | HTTP server listen address (accepts `:PORT` or `HOST:PORT`) |
 | `WASM_DIR` | `./components/target/wasm32-wasip2/release` | Directory containing compiled `.wasm` components |
 | `NATS_URL` | `nats://127.0.0.1:4222` | NATS server address |
 | `OPA_POLICY` | — | Path to `.rego` file or directory (**required**) |
@@ -237,7 +260,7 @@ cd examples/prompt-injection && make demo    # requires Ollama (pulls model auto
 | `LLM_MODE` | `mock` | `mock` for deterministic routing, `api` for remote inference (NVIDIA NIM, etc.), `real` for local Ollama |
 | `LLM_BASE_URL` | — | OpenAI-compatible API base URL |
 | `LLM_API_KEY` | — | API key for the LLM endpoint (required when `LLM_MODE=api`) |
-| `LLM_MODEL` | `gpt-4o-mini` | Model name for the LLM endpoint |
+| `LLM_MODEL` | `gpt-4o-mini` | Model name for the LLM endpoint (overridden by `NV_MODEL` in demo scripts) |
 | `LLM_TEMPERATURE` | — | Default sampling temperature |
 | `LLM_TIMEOUT_SEC` | `120` | HTTP client timeout for LLM API calls |
 | `PLUGIN_TIMEOUT_SEC` | `30` | Max wall-clock seconds per component invocation |
@@ -258,7 +281,7 @@ cd examples/prompt-injection && make demo    # requires Ollama (pulls model auto
 | Variable | Maps to | Default |
 |---|---|---|
 | `NV_API_KEY` | `LLM_API_KEY` | — |
-| `NV_MODEL` | `LLM_MODEL` | `nvdev/nvidia/llama-3.3-nemotron-super-49b-v1` |
+| `NV_MODEL` | `LLM_MODEL` | `meta/llama-3.3-70b-instruct` |
 
 ---
 
@@ -276,6 +299,16 @@ The agent contract is defined in `wit/agent.wit`. Every agent component implemen
 | `host-config` | `get-config` | Read-only config (always available) |
 
 Agents import only the interfaces they need. The orchestrator's `Linker` provides only what OPA permits. Mismatch = instantiation failure = structural denial.
+
+The shared `kv-pair` type carries an optional `taint` field. The orchestrator populates it with provenance labels computed from the DAG; agents can inspect it to make taint-aware decisions (e.g., annotating LLM prompts) or ignore it entirely.
+
+```wit
+record kv-pair {
+    key: string,
+    val: string,
+    taint: option<list<string>>,
+}
+```
 
 ---
 

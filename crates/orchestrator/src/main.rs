@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
         reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(llm_timeout_sec))
             .build()
-            .expect("failed to build LLM HTTP client"),
+            .map_err(|e| anyhow::anyhow!("failed to build LLM HTTP client: {e}"))?,
     );
     let llm_state = host::LlmState {
         mode: env_or("LLM_MODE", "mock"),
@@ -151,8 +151,10 @@ async fn main() -> anyhow::Result<()> {
     // Sandbox config
     let mut sandbox_config = wasmtime::Config::new();
     sandbox_config.consume_fuel(true);
-    let sandbox_engine =
-        std::sync::Arc::new(wasmtime::Engine::new(&sandbox_config).expect("sandbox engine"));
+    let sandbox_engine = std::sync::Arc::new(
+        wasmtime::Engine::new(&sandbox_config)
+            .map_err(|e| anyhow::anyhow!("failed to create sandbox wasmtime engine: {e}"))?,
+    );
     let sandbox_state = host::SandboxState {
         runtimes_dir: env_or("SANDBOX_RUNTIMES_DIR", "./runtimes"),
         allowed_languages: parse_comma_set(&env_or("SANDBOX_ALLOWED_LANGUAGES", "python")),
