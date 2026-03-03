@@ -5,12 +5,15 @@ stages:
 
 variables:
   CARGO_HOME: ${CI_PROJECT_DIR}/.cargo
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: "short"
 
 # ── Lint ─────────────────────────────────────────────────────────────────────
 
 rust-lint:
   stage: lint
-  image: rust:latest
+  image: rust:1.85
   before_script:
     - rustup target add wasm32-wasip2
     - rustup component add clippy rustfmt
@@ -23,6 +26,7 @@ rust-lint:
     - cargo clippy --target "$HOST_TARGET" -- -D warnings
   cache:
     key: rust-${CI_COMMIT_REF_SLUG}
+    policy: pull-push
     paths:
       - .cargo/
       - target/
@@ -50,7 +54,7 @@ opa-lint:
 
 rust-test:
   stage: test
-  image: rust:latest
+  image: rust:1.85
   before_script:
     - rustup target add wasm32-wasip2
   script:
@@ -59,6 +63,7 @@ rust-test:
     - cd components && cargo test --workspace --target "$HOST_TARGET"
   cache:
     key: rust-${CI_COMMIT_REF_SLUG}
+    policy: pull
     paths:
       - .cargo/
       - target/
@@ -82,7 +87,7 @@ opa-test:
 
 build-plugins:
   stage: build
-  image: rust:latest
+  image: rust:1.85
   before_script:
     - rustup target add wasm32-wasip2
   script:
@@ -94,13 +99,14 @@ build-plugins:
     expire_in: 1 week
   cache:
     key: rust-${CI_COMMIT_REF_SLUG}
+    policy: pull-push
     paths:
       - .cargo/
       - components/target/
 
 build-orchestrator:
   stage: build
-  image: rust:latest
+  image: rust:1.85
   script:
     - mkdir -p bin
     - cargo build --release -p wasm-af-orchestrator
@@ -109,3 +115,9 @@ build-orchestrator:
     paths:
       - bin/orchestrator
     expire_in: 1 week
+  cache:
+    key: rust-${CI_COMMIT_REF_SLUG}
+    policy: pull-push
+    paths:
+      - .cargo/
+      - target/
