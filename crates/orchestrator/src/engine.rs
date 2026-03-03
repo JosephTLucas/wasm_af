@@ -29,6 +29,8 @@ pub struct TaskInput {
 pub struct KvPair {
     pub key: String,
     pub val: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taint: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +237,7 @@ impl WasmEngine {
                 .map(|kv| wit::types::KvPair {
                     key: kv.key.clone(),
                     val: kv.val.clone(),
+                    taint: kv.taint.clone(),
                 })
                 .collect(),
         };
@@ -273,6 +276,7 @@ impl WasmEngine {
                     .map(|kv| KvPair {
                         key: kv.key,
                         val: kv.val,
+                        taint: kv.taint,
                     })
                     .collect(),
             }),

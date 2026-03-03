@@ -64,6 +64,8 @@ pub struct TaskState {
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub taint: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +97,8 @@ pub enum EventType {
     StepApproved,
     #[serde(rename = "step.rejected")]
     StepRejected,
+    #[serde(rename = "taint.declassified")]
+    TaintDeclassified,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -148,6 +152,7 @@ mod tests {
             created_at: ts,
             updated_at: ts,
             error: String::new(),
+            taint: HashMap::new(),
         }
     }
 
@@ -234,6 +239,7 @@ mod tests {
             ),
             (EventType::StepApproved, "\"step.approved\""),
             (EventType::StepRejected, "\"step.rejected\""),
+            (EventType::TaintDeclassified, "\"taint.declassified\""),
         ];
         for (variant, expected) in cases {
             let json = serde_json::to_string(&variant).unwrap();
@@ -356,5 +362,53 @@ mod tests {
         assert!(state.results.is_empty());
         assert!(state.context.is_empty());
         assert!(state.error.is_empty());
+        assert!(state.taint.is_empty());
+    }
+
+    #[test]
+    fn task_state_taint_round_trip() {
+        let ts = Utc.with_ymd_and_hms(2025, 6, 1, 12, 0, 0).unwrap();
+        let mut taint = HashMap::new();
+        taint.insert(
+            "t1-step-0.output".to_string(),
+            vec!["web".to_string(), "external".to_string()],
+        );
+        let state = TaskState {
+            task_id: "t1".into(),
+            status: Status::Running,
+            plan: vec![],
+            current_step: 0,
+            results: HashMap::new(),
+            context: HashMap::new(),
+            created_at: ts,
+            updated_at: ts,
+            error: String::new(),
+            taint,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let back: TaskState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.taint.len(), 1);
+        let labels = back.taint.get("t1-step-0.output").unwrap();
+        assert!(labels.contains(&"web".to_string()));
+        assert!(labels.contains(&"external".to_string()));
+    }
+
+    #[test]
+    fn task_state_empty_taint_omitted() {
+        let state = sample_task_state();
+        let json = serde_json::to_string(&state).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(
+            v.get("taint").is_none(),
+            "empty taint map should be omitted from serialized JSON"
+        );
+    }
+
+    #[test]
+    fn taint_declassified_event_type() {
+        let json = serde_json::to_string(&EventType::TaintDeclassified).unwrap();
+        assert_eq!(json, "\"taint.declassified\"");
+        let back: EventType = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, EventType::TaintDeclassified);
     }
 }

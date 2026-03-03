@@ -4,6 +4,7 @@ interface types {
     record kv-pair {
         key: string,
         val: string,
+        taint: option<list<string>>,
     }
 
     record task-input {

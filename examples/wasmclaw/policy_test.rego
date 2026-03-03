@@ -618,3 +618,120 @@ test_responder_no_approval if {
 		with data.config.approval_enabled as true
 		with data.config.auto_approved_commands as []
 }
+
+# ── Taint: brave_api_key config injection ─────────────────────────────────────
+
+test_web_search_receives_brave_api_key if {
+	config.brave_api_key == "BSA-test-key" with input as {
+		"step": {"agent_type": "web-search", "params": {}},
+	}
+		with data.secrets.brave_api_key as "BSA-test-key"
+}
+
+test_web_search_no_brave_key_when_secret_missing if {
+	not config.brave_api_key with input as {
+		"step": {"agent_type": "web-search", "params": {}},
+	}
+}
+
+test_web_search_mock_mode_when_no_brave_key if {
+	config.mock_results == "true" with input as {
+		"step": {"agent_type": "web-search", "params": {}},
+	}
+}
+
+test_web_search_no_mock_when_brave_key_present if {
+	not config.mock_results with input as {
+		"step": {"agent_type": "web-search", "params": {}},
+	}
+		with data.secrets.brave_api_key as "BSA-test-key"
+}
+
+test_shell_does_not_receive_brave_key if {
+	not config.brave_api_key with input as {
+		"step": {"agent_type": "shell", "params": {"command": "ls"}},
+	}
+		with data.secrets.brave_api_key as "BSA-test-key"
+		with data.config.shell_enabled as true
+		with data.config.allowed_commands as ["ls"]
+		with data.config.allowed_paths as ["/tmp"]
+}
+
+# ── Taint: shell denied when context has web taint ────────────────────────────
+
+test_shell_denied_when_web_tainted if {
+	not allow with input as {
+		"step": {"agent_type": "shell", "params": {"command": "echo hi"}},
+		"context_taint": ["web"],
+	}
+		with data.config.shell_enabled as true
+		with data.config.allowed_commands as ["echo"]
+		with data.config.allowed_paths as ["/tmp"]
+}
+
+test_shell_allowed_when_no_taint if {
+	allow with input as {
+		"step": {"agent_type": "shell", "params": {"command": "echo hi"}},
+		"context_taint": [],
+	}
+		with data.config.shell_enabled as true
+		with data.config.allowed_commands as ["echo"]
+		with data.config.allowed_paths as ["/tmp"]
+}
+
+# ── Taint: LLM approval gate when web taint in context ───────────────────────
+
+test_responder_approval_when_web_tainted if {
+	requires_approval with input as {
+		"step": {"agent_type": "responder", "params": {}},
+		"agent": {"host_functions": ["llm_complete"], "declassifies": []},
+		"context_taint": ["web"],
+		"task": {"type": "taint-demo"},
+		"prior_results": {},
+	}
+		with data.config.taint_gates_enabled as true
+		with data.config.approval_enabled as true
+}
+
+test_responder_no_approval_when_clean if {
+	not requires_approval with input as {
+		"step": {"agent_type": "responder", "params": {}},
+		"agent": {"host_functions": ["llm_complete"], "declassifies": []},
+		"context_taint": [],
+		"task": {"type": "taint-demo"},
+		"prior_results": {},
+	}
+		with data.config.taint_gates_enabled as true
+		with data.config.approval_enabled as true
+		with data.config.auto_approved_commands as []
+}
+
+test_declassifier_exempt_from_approval if {
+	not requires_approval with input as {
+		"step": {"agent_type": "summarizer", "params": {}},
+		"agent": {"host_functions": ["llm_complete"], "declassifies": ["web"], "capability": "llm"},
+		"context_taint": ["web"],
+		"task": {"type": "taint-demo"},
+		"prior_results": {},
+	}
+		with data.config.taint_gates_enabled as true
+		with data.config.approval_enabled as true
+}
+
+# ── Taint: summarizer allowed with declassification ──────────────────────────
+
+test_summarizer_allowed if {
+	allow with input as {
+		"step": {"agent_type": "summarizer", "params": {}},
+		"agent": {"capability": "llm", "declassifies": ["web"]},
+		"context_taint": ["web"],
+	}
+}
+
+test_summarizer_denied_when_untrusted_declassify if {
+	not allow with input as {
+		"step": {"agent_type": "summarizer", "params": {}},
+		"agent": {"capability": "untrusted", "declassifies": ["web"]},
+		"context_taint": ["web"],
+	}
+}

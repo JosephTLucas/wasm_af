@@ -25,6 +25,10 @@ pub struct AgentMeta {
     pub splice: bool,
     #[serde(default)]
     pub external: bool,
+    #[serde(default)]
+    pub output_taint: Vec<String>,
+    #[serde(default)]
+    pub declassifies: Vec<String>,
 }
 
 pub struct AgentRegistry {
@@ -204,6 +208,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             error: String::new(),
+            taint: HashMap::new(),
         }
     }
 
@@ -416,5 +421,43 @@ mod tests {
     #[test]
     fn extract_domain_from_non_url() {
         assert_eq!(extract_domain("not-a-url"), "not-a-url");
+    }
+
+    // ---- Taint fields ----
+
+    #[test]
+    fn parse_registry_with_taint_fields() {
+        let json = r#"{
+            "url-fetch": {
+                "wasm_name": "url_fetch",
+                "capability": "http",
+                "context_key": "skill_output",
+                "host_functions": ["http"],
+                "output_taint": ["web"]
+            },
+            "summarizer": {
+                "wasm_name": "summarizer",
+                "capability": "llm",
+                "context_key": "summary",
+                "host_functions": ["llm_complete"],
+                "declassifies": ["web"]
+            }
+        }"#;
+        let reg = AgentRegistry::parse(json.as_bytes()).unwrap();
+        let fetch = reg.get("url-fetch").unwrap();
+        assert_eq!(fetch.output_taint, vec!["web"]);
+        assert!(fetch.declassifies.is_empty());
+
+        let summarizer = reg.get("summarizer").unwrap();
+        assert!(summarizer.output_taint.is_empty());
+        assert_eq!(summarizer.declassifies, vec!["web"]);
+    }
+
+    #[test]
+    fn parse_registry_taint_fields_default_to_empty() {
+        let reg = AgentRegistry::parse(minimal_registry_json().as_bytes()).unwrap();
+        let meta = reg.get("shell").unwrap();
+        assert!(meta.output_taint.is_empty());
+        assert!(meta.declassifies.is_empty());
     }
 }

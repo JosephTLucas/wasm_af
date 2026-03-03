@@ -500,4 +500,117 @@ mod tests {
             .unwrap();
         assert!(allowed.permitted);
     }
+
+    #[test]
+    fn taint_deny_shell_with_web_taint() {
+        let policy = r#"
+            package wasm_af.authz
+            import rego.v1
+            default allow := false
+            allow if {
+                input.step.agent_type == "shell"
+                not _web_tainted
+            }
+            _web_tainted if { "web" in input.context_taint }
+            deny_code := "tainted-exec" if { _web_tainted }
+            deny_message := "web data cannot flow to shell" if { _web_tainted }
+        "#;
+        let modules = HashMap::from([("taint.rego".into(), policy.into())]);
+        let mut eval = OpaEvaluator::new(&modules, None).unwrap();
+
+        let clean = eval
+            .evaluate_step(serde_json::json!({
+                "step": {"agent_type": "shell"},
+                "context_taint": []
+            }))
+            .unwrap();
+        assert!(clean.permitted);
+
+        let tainted = eval
+            .evaluate_step(serde_json::json!({
+                "step": {"agent_type": "shell"},
+                "context_taint": ["web"]
+            }))
+            .unwrap();
+        assert!(!tainted.permitted);
+        assert_eq!(tainted.deny_code.as_deref(), Some("tainted-exec"));
+    }
+
+    #[test]
+    fn taint_approval_when_web_in_context() {
+        let policy = r#"
+            package wasm_af.authz
+            import rego.v1
+            default allow := false
+            allow if { input.step.agent_type == "responder" }
+            default requires_approval := false
+            requires_approval if {
+                "web" in input.context_taint
+                "llm_complete" in input.agent.host_functions
+            }
+            approval_reason := "web taint flows to LLM" if {
+                requires_approval
+            }
+        "#;
+        let modules = HashMap::from([("taint.rego".into(), policy.into())]);
+        let mut eval = OpaEvaluator::new(&modules, None).unwrap();
+
+        let clean = eval
+            .evaluate_step(serde_json::json!({
+                "step": {"agent_type": "responder"},
+                "agent": {"host_functions": ["llm_complete"]},
+                "context_taint": []
+            }))
+            .unwrap();
+        assert!(clean.permitted);
+        assert!(!clean.requires_approval);
+
+        let tainted = eval
+            .evaluate_step(serde_json::json!({
+                "step": {"agent_type": "responder"},
+                "agent": {"host_functions": ["llm_complete"]},
+                "context_taint": ["web"]
+            }))
+            .unwrap();
+        assert!(tainted.permitted);
+        assert!(tainted.requires_approval);
+        assert_eq!(tainted.approval_reason, "web taint flows to LLM");
+    }
+
+    #[test]
+    fn taint_deny_untrusted_declassify() {
+        let policy = r#"
+            package wasm_af.authz
+            import rego.v1
+            default allow := false
+            allow if { not _untrusted_declassify }
+            _untrusted_declassify if {
+                count(input.agent.declassifies) > 0
+                input.agent.capability == "untrusted"
+            }
+            deny_code := "untrusted-declassify" if { _untrusted_declassify }
+            deny_message := "untrusted agents cannot declassify" if { _untrusted_declassify }
+        "#;
+        let modules = HashMap::from([("taint.rego".into(), policy.into())]);
+        let mut eval = OpaEvaluator::new(&modules, None).unwrap();
+
+        let platform = eval
+            .evaluate_step(serde_json::json!({
+                "step": {"agent_type": "summarizer"},
+                "agent": {"capability": "llm", "declassifies": ["web"]},
+                "context_taint": []
+            }))
+            .unwrap();
+        assert!(platform.permitted);
+
+        let untrusted = eval
+            .evaluate_step(serde_json::json!({
+                "step": {"agent_type": "evil-agent"},
+                "agent": {"capability": "untrusted", "declassifies": ["web"]},
+                "context_taint": []
+            }))
+            .unwrap();
+        assert!(!untrusted.permitted);
+        assert_eq!(untrusted.deny_code.as_deref(), Some("untrusted-declassify"));
+    }
 }

@@ -32,7 +32,13 @@ impl Guest for SummarizerAgent {
 
         let mut context_parts = Vec::new();
         for kv in &input.context {
-            context_parts.push(format!("[{}]\n{}", kv.key, kv.val));
+            let label = match &kv.taint {
+                Some(labels) if !labels.is_empty() => {
+                    format!("[{} (taint: {})]", kv.key, labels.join(", "))
+                }
+                _ => format!("[{}]", kv.key),
+            };
+            context_parts.push(format!("{}\n{}", label, kv.val));
         }
 
         let user_content = if context_parts.is_empty() {

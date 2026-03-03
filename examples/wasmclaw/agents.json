@@ -46,6 +46,7 @@
     "capability": "http",
     "context_key": "web_search_results",
     "host_functions": ["http"],
+    "output_taint": ["web"],
     "payload_fields": {
       "query": "step.params.query",
       "count": 5
@@ -87,9 +88,20 @@
     "capability": "email",
     "context_key": "skill_output",
     "host_functions": [],
+    "output_taint": ["external"],
     "payload_fields": {
       "folder": "step.params.folder",
       "count":  5
+    }
+  },
+  "summarizer": {
+    "wasm_name": "summarizer",
+    "capability": "llm",
+    "context_key": "summary",
+    "host_functions": ["llm_complete"],
+    "declassifies": ["web"],
+    "payload_fields": {
+      "query": "step.params.query"
     }
   }
 }

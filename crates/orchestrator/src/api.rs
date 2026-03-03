@@ -81,6 +81,7 @@ pub async fn handle_submit_task(
         created_at: Utc::now(),
         updated_at: Utc::now(),
         error: String::new(),
+        taint: HashMap::new(),
     };
 
     orch.store
@@ -402,6 +403,8 @@ pub async fn handle_register_agent(
                 enrichments: Vec::new(),
                 splice: false,
                 external: true,
+                output_taint: vec!["untrusted".to_string()],
+                declassifies: Vec::new(),
             },
         )
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e}")))?;
@@ -937,6 +940,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             error: String::new(),
+            taint: HashMap::new(),
         }
     }
 
@@ -1024,6 +1028,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             error: String::new(),
+            taint: HashMap::new(),
         };
         assert_eq!(super::extract_response(&state), "from result_key");
     }
@@ -1056,6 +1061,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             error: String::new(),
+            taint: HashMap::new(),
         };
         assert_eq!(super::extract_response(&state), "from responder");
     }
@@ -1075,6 +1081,7 @@ mod tests {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             error: String::new(),
+            taint: HashMap::new(),
         };
         assert_eq!(super::extract_response(&state), "(no response)");
     }

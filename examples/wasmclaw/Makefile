@@ -1,4 +1,4 @@
-.PHONY: demo demo-api demo-real reply-all-demo build pull-model test-policy clean help
+.PHONY: demo demo-api demo-real reply-all-demo taint-demo build pull-model test-policy clean help
 
 ROOT      := $(shell cd ../.. && pwd)
 MODEL     ?= qwen3:4b
@@ -17,6 +17,9 @@ demo-real: pull-model build ## Build + run with local Ollama
 
 reply-all-demo: build ## Reply-all parallel DAG demo (jailbreak + approval in one task)
 	@LLM_MODE=$(LLM_MODE) $(ROOT)/examples/wasmclaw/reply-all-demo.sh
+
+taint-demo: build ## Taint tracking demo (needs LLM_MODE=api + BRAVE_API_KEY in .env)
+	@LLM_MODE=api $(ROOT)/examples/wasmclaw/taint-demo.sh
 
 ##@ Setup
 

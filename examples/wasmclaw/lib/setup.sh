@@ -206,7 +206,7 @@ if [ "$LLM_MODE" = "api" ] && [ "$_PLUGIN_TIMEOUT" -le 30 ]; then
 fi
 
 OPA_POLICY="$EXAMPLE_DIR" \
-OPA_DATA="$EXAMPLE_DIR/data.json" \
+OPA_DATA="${OPA_DATA:-$EXAMPLE_DIR/data.json}" \
 AGENT_REGISTRY_FILE="$EXAMPLE_DIR/agents.json" \
 LLM_MODE="$LLM_MODE" \
 LLM_BASE_URL="$_LLM_BASE_URL" \

@@ -51,15 +51,21 @@ impl Guest for ResponderAgent {
             if kv.key == "memory_context" {
                 continue;
             }
+            let label = match &kv.taint {
+                Some(labels) if !labels.is_empty() => {
+                    format!("[{} (taint: {})]", kv.key, labels.join(", "))
+                }
+                _ => format!("[{}]", kv.key),
+            };
             if let Some(idx) = email_index {
                 if kv.key == "skill_output" {
                     if let Some(scoped) = scope_email_context(&kv.val, idx) {
-                        context_parts.push(format!("[{}]\n{}", kv.key, scoped));
+                        context_parts.push(format!("{}\n{}", label, scoped));
                         continue;
                     }
                 }
             }
-            context_parts.push(format!("[{}]\n{}", kv.key, kv.val));
+            context_parts.push(format!("{}\n{}", label, kv.val));
         }
 
         let user_content = if context_parts.is_empty() {

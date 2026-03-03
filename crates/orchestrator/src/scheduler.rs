@@ -342,6 +342,7 @@ impl Orchestrator {
         let meta = self.registry.get(&step.agent_type)?;
 
         let prior_results = self.collect_prior_results(state, &step.id);
+        let context_taint = self.compute_context_taint(state, &step.id);
 
         let policy_result = {
             let mut policy = self
@@ -360,6 +361,7 @@ impl Orchestrator {
                     "wasm_name": meta.wasm_name,
                     "capability": meta.capability,
                     "host_functions": meta.host_functions,
+                    "declassifies": meta.declassifies,
                 },
                 "task": {
                     "id": task_id,
@@ -372,6 +374,7 @@ impl Orchestrator {
                     "completed_steps": state.plan.iter().filter(|s| s.status == StepStatus::Completed).count(),
                 },
                 "prior_results": prior_results,
+                "context_taint": context_taint,
             });
             policy.evaluate_step(input)?
         };
@@ -583,9 +586,27 @@ impl Orchestrator {
             .put_payload(&step.output_key, &output.payload)
             .await?;
 
+        // Compute taint for this step's output:
+        // start with agent's declared output_taint, union ancestor taint,
+        // then subtract any labels the agent declassifies.
+        let mut step_taint: HashSet<String> = meta.output_taint.iter().cloned().collect();
+        {
+            let ancestor_taint = self.compute_context_taint(state, &step.id);
+            step_taint.extend(ancestor_taint);
+        }
+        let declassified: Vec<String> = meta
+            .declassifies
+            .iter()
+            .filter(|l| step_taint.remove(l.as_str()))
+            .cloned()
+            .collect();
+        let step_taint_vec: Vec<String> = step_taint.into_iter().collect();
+
         let fin = Utc::now();
         let output_key = step.output_key.clone();
         let output_payload = output.payload.clone();
+        let taint_for_store = step_taint_vec.clone();
+        let taint_output_key = step.output_key.clone();
         self.store
             .update(task_id, |s| {
                 if let Some(idx) = step_index(&s.plan, &step_id) {
@@ -593,9 +614,31 @@ impl Orchestrator {
                     s.plan[idx].completed_at = Some(fin);
                     s.results.insert(output_key.clone(), output_payload.clone());
                 }
+                if !taint_for_store.is_empty() {
+                    s.taint
+                        .insert(taint_output_key.clone(), taint_for_store.clone());
+                }
                 Ok(())
             })
             .await?;
+
+        if !declassified.is_empty() {
+            if let Err(e) = self
+                .store
+                .append_audit(&mut AuditEvent {
+                    task_id: task_id.clone(),
+                    step_id: step_id.clone(),
+                    event_type: EventType::TaintDeclassified,
+                    timestamp: Utc::now(),
+                    policy_target: step.agent_type.clone(),
+                    message: format!("declassified: {:?}", declassified),
+                    ..Default::default()
+                })
+                .await
+            {
+                warn!(task_id, step_id = %step_id, err = %e, "audit: taint-declassified write failed");
+            }
+        }
 
         if let Err(e) = self
             .store
@@ -667,13 +710,120 @@ impl Orchestrator {
     }
 
     fn build_step_context(&self, state: &TaskState, step_id: &str) -> Vec<KvPair> {
-        self.collect_ancestor_outputs(state, step_id)
+        let ancestor_outputs = self.collect_ancestor_outputs(state, step_id);
+        let ancestor_taint = self.collect_ancestor_taint(state, step_id);
+
+        ancestor_outputs
             .into_iter()
-            .map(|(key, values)| KvPair {
-                key,
-                val: collapse_values(values),
+            .map(|(key, values)| {
+                let taint_labels = ancestor_taint.get(&key).cloned();
+                KvPair {
+                    key,
+                    val: collapse_values(values),
+                    taint: taint_labels,
+                }
             })
             .collect()
+    }
+
+    fn collect_ancestor_taint(
+        &self,
+        state: &TaskState,
+        step_id: &str,
+    ) -> HashMap<String, Vec<String>> {
+        let g = match build_dag(&state.plan) {
+            Ok(g) => g,
+            Err(_) => return HashMap::new(),
+        };
+
+        let ancestor_ids = g.ancestors(step_id);
+        let ancestor_set: HashSet<&str> = ancestor_ids.iter().map(|s| s.as_str()).collect();
+
+        // Labels shielded by completed declassifying ancestors.
+        let mut shielded: HashSet<String> = HashSet::new();
+        for s in &state.plan {
+            if !ancestor_set.contains(s.id.as_str()) {
+                continue;
+            }
+            if let Ok(meta) = self.registry.get(&s.agent_type) {
+                if !meta.declassifies.is_empty() && s.status == StepStatus::Completed {
+                    shielded.extend(meta.declassifies.iter().cloned());
+                }
+            }
+        }
+
+        let mut result: HashMap<String, HashSet<String>> = HashMap::new();
+
+        for s in &state.plan {
+            if !ancestor_set.contains(s.id.as_str()) {
+                continue;
+            }
+            if state.results.get(&s.output_key).is_none() {
+                continue;
+            }
+            let key = self
+                .registry
+                .get(&s.agent_type)
+                .map(|m| m.context_key.clone())
+                .unwrap_or_else(|_| format!("{}_result", s.agent_type));
+
+            if let Some(labels) = state.taint.get(&s.output_key) {
+                for label in labels {
+                    if !shielded.contains(label) {
+                        result.entry(key.clone()).or_default().insert(label.clone());
+                    }
+                }
+            }
+        }
+
+        result
+            .into_iter()
+            .map(|(k, v)| (k, v.into_iter().collect()))
+            .collect()
+    }
+
+    fn compute_context_taint(&self, state: &TaskState, step_id: &str) -> Vec<String> {
+        let g = match build_dag(&state.plan) {
+            Ok(g) => g,
+            Err(_) => return Vec::new(),
+        };
+
+        let ancestor_ids = g.ancestors(step_id);
+        let ancestor_set: HashSet<&str> = ancestor_ids.iter().map(|s| s.as_str()).collect();
+
+        // Collect labels that declassifying ancestors absorb from their
+        // own upstream ancestors. A declassifier acts as a taint barrier:
+        // downstream steps should not see the labels it stripped, even from
+        // the declassifier's own ancestors.
+        let mut shielded: HashSet<String> = HashSet::new();
+        for s in &state.plan {
+            if !ancestor_set.contains(s.id.as_str()) {
+                continue;
+            }
+            if let Ok(meta) = self.registry.get(&s.agent_type) {
+                if !meta.declassifies.is_empty() && s.status == StepStatus::Completed {
+                    shielded.extend(meta.declassifies.iter().cloned());
+                }
+            }
+        }
+
+        let mut all_taint: HashSet<String> = HashSet::new();
+        for s in &state.plan {
+            if !ancestor_set.contains(s.id.as_str()) {
+                continue;
+            }
+            if let Some(labels) = state.taint.get(&s.output_key) {
+                for label in labels {
+                    if !shielded.contains(label) {
+                        all_taint.insert(label.clone());
+                    }
+                }
+            }
+        }
+
+        let mut sorted: Vec<String> = all_taint.into_iter().collect();
+        sorted.sort();
+        sorted
     }
 
     async fn handle_splice(
