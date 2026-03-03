@@ -1,5 +1,10 @@
-use agent_types::{TaskInput, TaskOutput};
-use extism_pdk::*;
+wit_bindgen::generate!({
+    world: "agent",
+    path: "../../../wit/agent.wit",
+});
+
+use waki::Client;
+use wasm_af::agent::host_config::get_config;
 
 #[derive(serde::Deserialize)]
 struct SearchRequest {
@@ -38,61 +43,65 @@ struct BraveResult {
     description: Option<String>,
 }
 
-#[plugin_fn]
-pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
-    let req: SearchRequest = serde_json::from_str(&input.payload)
-        .map_err(|e| Error::msg(format!("payload parse error: {e}")))?;
+struct WebSearchAgent;
 
-    if req.query.trim().is_empty() {
-        return Err(Error::msg("query field is required and must not be empty").into());
+impl Guest for WebSearchAgent {
+    fn execute(input: TaskInput) -> Result<TaskOutput, String> {
+        let req: SearchRequest = serde_json::from_str(&input.payload)
+            .map_err(|e| format!("payload parse error: {e}"))?;
+
+        if req.query.trim().is_empty() {
+            return Err("query field is required and must not be empty".into());
+        }
+
+        let mock_mode = get_config("mock_results")
+            .map(|v| v.trim().eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        let results = if mock_mode {
+            mock_results(&req.query)
+        } else {
+            let api_key = get_config("brave_api_key")
+                .ok_or_else(|| "brave_api_key not set in config".to_string())?;
+            brave_search(&req.query, req.count.unwrap_or(5), &api_key)?
+        };
+
+        let payload = serde_json::to_string(&SearchOutput {
+            query: req.query,
+            results,
+        })
+        .map_err(|e| format!("serialization error: {e}"))?;
+
+        Ok(TaskOutput {
+            payload,
+            metadata: vec![],
+        })
     }
-
-    let mock_mode = config::get("mock_results")
-        .unwrap_or(None)
-        .map(|v| v.trim().eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-
-    let results = if mock_mode {
-        mock_results(&req.query)
-    } else {
-        let api_key = config::get("brave_api_key")
-            .unwrap_or(None)
-            .ok_or_else(|| Error::msg("brave_api_key not set in config"))?;
-        brave_search(&req.query, req.count.unwrap_or(5), &api_key)?
-    };
-
-    let payload = serde_json::to_string(&SearchOutput {
-        query: req.query,
-        results,
-    })?;
-
-    Ok(Json(TaskOutput {
-        payload,
-        metadata: vec![],
-    }))
 }
 
-fn brave_search(query: &str, count: u32, api_key: &str) -> Result<Vec<SearchResult>, Error> {
+export!(WebSearchAgent);
+
+fn brave_search(query: &str, count: u32, api_key: &str) -> Result<Vec<SearchResult>, String> {
     let url = format!(
-        "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
+        "https://api.search.brave.com/res/v1/web/search?q={}&count={count}",
         percent_encode(query),
-        count
     );
 
-    let http_req = HttpRequest::new(&url)
-        .with_header("X-Subscription-Token", api_key)
-        .with_header("Accept", "application/json");
-
-    let resp = http::request::<Vec<u8>>(&http_req, None)
-        .map_err(|e| Error::msg(format!("search request failed: {e}")))?;
+    let resp = Client::new()
+        .get(&url)
+        .header("X-Subscription-Token", api_key)
+        .header("Accept", "application/json")
+        .send()
+        .map_err(|e| format!("search request failed: {e}"))?;
 
     let status = resp.status_code();
     if !(200..300).contains(&status) {
-        return Err(Error::msg(format!("Brave Search returned HTTP {status}")));
+        return Err(format!("Brave Search returned HTTP {status}"));
     }
 
-    let brave: BraveResponse = serde_json::from_slice(&resp.body())
-        .map_err(|e| Error::msg(format!("JSON parse error: {e}")))?;
+    let body = resp.body().map_err(|e| format!("read body: {e}"))?;
+    let brave: BraveResponse =
+        serde_json::from_slice(&body).map_err(|e| format!("JSON parse error: {e}"))?;
 
     Ok(brave
         .web

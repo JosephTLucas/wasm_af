@@ -5,34 +5,31 @@ stages:
 
 variables:
   CARGO_HOME: ${CI_PROJECT_DIR}/.cargo
-  GOPATH: ${CI_PROJECT_DIR}/.go
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: "short"
 
 # ── Lint ─────────────────────────────────────────────────────────────────────
 
-go-lint:
-  stage: lint
-  image: golang:1.25
-  script:
-    - test -z "$(gofmt -l .)" || (echo "gofmt needed on:" && gofmt -l . && exit 1)
-    - go vet ./...
-    - go mod tidy
-    - git diff --exit-code go.mod go.sum || (echo "go.mod/go.sum not tidy" && exit 1)
-
 rust-lint:
   stage: lint
-  image: rust:latest
+  image: rust:1.91
   before_script:
-    - rustup target add wasm32-unknown-unknown wasm32-wasip1
+    - rustup target add wasm32-wasip2
     - rustup component add clippy rustfmt
   script:
+    - cargo fmt --all --check
+    - cargo clippy --workspace -- -D warnings
     - cd components
     - cargo fmt --check
     - HOST_TARGET=$(rustc -vV | grep host | awk '{print $2}')
     - cargo clippy --target "$HOST_TARGET" -- -D warnings
   cache:
     key: rust-${CI_COMMIT_REF_SLUG}
+    policy: pull-push
     paths:
       - .cargo/
+      - target/
       - components/target/
 
 opa-lint:
@@ -55,25 +52,21 @@ opa-lint:
 
 # ── Test ─────────────────────────────────────────────────────────────────────
 
-go-test:
-  stage: test
-  image: golang:1.25
-  script:
-    - go test -race ./provider/orchestrator/ ./pkg/...
-
 rust-test:
   stage: test
-  image: rust:latest
+  image: rust:1.91
   before_script:
-    - rustup target add wasm32-unknown-unknown wasm32-wasip1
+    - rustup target add wasm32-wasip2
   script:
-    - cd components
+    - cargo test --workspace
     - HOST_TARGET=$(rustc -vV | grep host | awk '{print $2}')
-    - cargo test --target "$HOST_TARGET"
+    - cd components && cargo test --workspace --target "$HOST_TARGET"
   cache:
     key: rust-${CI_COMMIT_REF_SLUG}
+    policy: pull
     paths:
       - .cargo/
+      - target/
       - components/target/
 
 opa-test:
@@ -94,32 +87,37 @@ opa-test:
 
 build-plugins:
   stage: build
-  image: rust:latest
+  image: rust:1.91
   before_script:
-    - rustup target add wasm32-unknown-unknown wasm32-wasip1
+    - rustup target add wasm32-wasip2
   script:
     - cd components
     - cargo build --release
-    - cargo build --release -p file-ops --target wasm32-wasip1
   artifacts:
     paths:
-      - components/target/wasm32-unknown-unknown/release/*.wasm
-      - components/target/wasm32-wasip1/release/file_ops.wasm
+      - components/target/wasm32-wasip2/release/*.wasm
     expire_in: 1 week
   cache:
     key: rust-${CI_COMMIT_REF_SLUG}
+    policy: pull-push
     paths:
       - .cargo/
       - components/target/
 
 build-orchestrator:
   stage: build
-  image: golang:1.25
+  image: rust:1.91
   script:
     - mkdir -p bin
-    - go build -o bin/orchestrator ./provider/orchestrator/
-    - go build -o bin/webhook-gateway ./cmd/webhook-gateway/
+    - cargo build --release -p wasm-af-orchestrator
+    - cp target/release/orchestrator bin/orchestrator
   artifacts:
     paths:
-      - bin/
+      - bin/orchestrator
     expire_in: 1 week
+  cache:
+    key: rust-${CI_COMMIT_REF_SLUG}
+    policy: pull-push
+    paths:
+      - .cargo/
+      - target/

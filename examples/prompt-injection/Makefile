@@ -16,12 +16,13 @@ pull-model: ## Ensure the Ollama model is pulled (does nothing if already presen
 	@ollama show "$(MODEL)" >/dev/null 2>&1 || \
 		(echo "Pulling $(MODEL) (this may take a few minutes)..." && ollama pull "$(MODEL)")
 
-build: ## Build the Go orchestrator and Rust WASM plugins
+build: ## Build the Rust orchestrator and WASM agent components
 	@mkdir -p $(ROOT)/bin
-	@echo "Building Rust WASM plugins..."
+	@echo "Building WASM agent components..."
 	@cd $(ROOT)/components && cargo build --release 2>&1
-	@echo "Building Go orchestrator..."
-	@go build -o $(ROOT)/bin/orchestrator $(ROOT)/provider/orchestrator/ 2>&1
+	@echo "Building Rust orchestrator..."
+	@cd $(ROOT) && cargo build --release -p wasm-af-orchestrator 2>&1
+	@cp $(ROOT)/target/release/orchestrator $(ROOT)/bin/orchestrator
 
 ##@ Util
 

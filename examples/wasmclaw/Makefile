@@ -1,4 +1,4 @@
-.PHONY: demo demo-api demo-real reply-all-demo build pull-model test-policy clean help
+.PHONY: demo demo-api demo-real reply-all-demo taint-demo build pull-model test-policy clean help
 
 ROOT      := $(shell cd ../.. && pwd)
 MODEL     ?= qwen3:4b
@@ -18,6 +18,9 @@ demo-real: pull-model build ## Build + run with local Ollama
 reply-all-demo: build ## Reply-all parallel DAG demo (jailbreak + approval in one task)
 	@LLM_MODE=$(LLM_MODE) $(ROOT)/examples/wasmclaw/reply-all-demo.sh
 
+taint-demo: build ## Taint tracking demo (needs LLM_MODE=api + BRAVE_API_KEY in .env)
+	@LLM_MODE=api $(ROOT)/examples/wasmclaw/taint-demo.sh
+
 ##@ Setup
 
 pull-model: ## Ensure the Ollama model is pulled (does nothing if already present)
@@ -26,18 +29,13 @@ pull-model: ## Ensure the Ollama model is pulled (does nothing if already presen
 	@ollama show "$(MODEL)" >/dev/null 2>&1 || \
 		(echo "Pulling $(MODEL) (this may take a few minutes)..." && ollama pull "$(MODEL)")
 
-build: ## Build wasmclaw WASM agents, orchestrator, and webhook-gateway
+build: ## Build WASM agent components + Rust orchestrator
 	@mkdir -p $(ROOT)/bin
-	@echo "Building Rust WASM agents (unknown-unknown)..."
-	@cd $(ROOT)/components && cargo build --release -p router -p shell -p memory -p responder -p sandbox-exec -p email-send -p email-read -p web-search 2>&1
-	@echo "Building file-ops (wasm32-wasip1 → WASI filesystem)..."
-	@cd $(ROOT)/components && cargo build --release -p file-ops --target wasm32-wasip1 2>&1
-	@cp $(ROOT)/components/target/wasm32-wasip1/release/file_ops.wasm \
-		$(ROOT)/components/target/wasm32-unknown-unknown/release/file_ops.wasm
-	@echo "Building Go orchestrator..."
-	@go build -o $(ROOT)/bin/orchestrator $(ROOT)/provider/orchestrator/ 2>&1
-	@echo "Building Go webhook-gateway..."
-	@go build -o $(ROOT)/bin/webhook-gateway $(ROOT)/cmd/webhook-gateway/ 2>&1
+	@echo "Building WASM agent components (wasm32-wasip2)..."
+	@cd $(ROOT)/components && cargo build --release 2>&1
+	@echo "Building Rust orchestrator..."
+	@cd $(ROOT) && cargo build --release -p wasm-af-orchestrator 2>&1
+	@cp $(ROOT)/target/release/orchestrator $(ROOT)/bin/orchestrator
 
 ##@ Test
 
@@ -50,7 +48,6 @@ test-policy: ## Run OPA unit tests for policy.rego and submit.rego (no services 
 
 clean: ## Kill any stale processes left from a previous interrupted run
 	@lsof -ti:8080 | xargs kill 2>/dev/null || true
-	@lsof -ti:8081 | xargs kill 2>/dev/null || true
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} \

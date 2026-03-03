@@ -10,7 +10,7 @@ LLM_MODE=real make demo                # local Ollama
 
 For API inference, set `NV_API_KEY` in `.env` at the repo root. Default model: `nvdev/nvidia/llama-3.3-nemotron-super-49b-v1` (override with `NV_MODEL`).
 
-Prerequisites: Rust (wasm32-unknown-unknown + wasm32-wasip1), Go 1.25+, jq, `nats-server`. Optional: `opa`, `wasm-tools`.
+Prerequisites: Rust (wasm32-wasip2 target), jq, `nats-server`. Optional: `opa`, `wasm-tools`.
 
 ---
 
@@ -18,19 +18,19 @@ Prerequisites: Rust (wasm32-unknown-unknown + wasm32-wasip1), Go 1.25+, jq, `nat
 
 | | sandbox-exec | shell |
 |---|---|---|
-| **Runs in** | Wazero (WASM VM) | Host OS via `exec.Command` |
-| **Trust boundary** | Wazero runtime | OPA + Go host function |
+| **Runs in** | wasmtime (WASM sandbox) | Host OS via `std::process::Command` |
+| **Trust boundary** | wasmtime runtime | OPA + Rust host function |
 | **Network** | None | Host network |
 | **Filesystem** | Explicitly mounted paths only | OPA path allowlist |
 | **Policy posture** | Permissive (code can't escape WASM) | Restrictive (binary + path + metachar gates) |
 
-Shell commands use `exec.Command(binary, args...)` — never `/bin/sh -c`. Three enforcement layers: OPA policy (binary allowlist, metachar rejection, path confinement), host function (independent allowlist, `PATH=/usr/bin:/bin`), and WASI-native agents (file-ops uses `std::fs` with Wazero `AllowedPaths` — no host function in the trust path).
+Shell commands use `std::process::Command(binary, args...)` — never `/bin/sh -c`. Three enforcement layers: OPA policy (binary allowlist, metachar rejection, path confinement), host function (independent allowlist, `PATH=/usr/bin:/bin`), and WASI-native agents (file-ops uses `std::fs` with wasmtime `preopened_dir` — no host function in the trust path).
 
 ## Email agents
 
 | | email-send | email-read |
 |---|---|---|
-| **Secret location** | Go closure (SMTP creds) | OPA-injected plugin config |
+| **Secret location** | Rust host state (SMTP creds) | OPA-injected plugin config |
 | **Host functions** | `send_email` | (none) |
 | **Network** | None (host fn handles it) | None |
 | **Injection defense** | Never sees credentials | No host fns, no HTTP, no exfil path |
@@ -96,7 +96,7 @@ make reply-all-demo           # standalone demo with interactive Y/n approval
 ```
 POST /message { message: "calculate fibonacci of 10" }
   │
-  ├── webhook-gateway → POST /tasks { type: "chat", query: "..." }
+  ├── orchestrator → submit task { type: "chat", query: "..." }
   ├── submit.rego: allow (task_type == "chat")
   │
   ├── ChatBuilder → plan (DAG):
@@ -111,7 +111,7 @@ POST /message { message: "calculate fibonacci of 10" }
   │
   ├── runStep(sandbox-exec):
   │     policy.rego: allow (sandbox_exec_enabled, python ∈ allowed_languages)
-  │     → Wazero instance → python.wasm → stdout: "55"
+  │     → wasmtime instance → python.wasm → stdout: "55"
   │
   ├── runStep(responder): LLM summarizes skill output (ancestors: memory, router, sandbox-exec)
   └── runStep(memory): kv_put updated history
@@ -123,11 +123,11 @@ POST /message { message: "calculate fibonacci of 10" }
 |---|---|---|---|
 | memory | kv | kv_get, kv_put | NATS JetStream KV |
 | router | llm | llm_complete | JSON parse |
-| shell | shell | exec_command | `exec.Command` + OPA gates |
-| file-ops | file | (none) | WASI std::fs, Wazero AllowedPaths |
-| sandbox-exec | sandbox | sandbox_exec | Wazero instance, no network |
-| web-search | http | (none) | Extism AllowedHosts |
-| email-send | email | send_email | Host fn; creds in Go closure |
+| shell | shell | exec_command | `std::process::Command` + OPA gates |
+| file-ops | file | (none) | WASI std::fs, wasmtime preopened_dir |
+| sandbox-exec | sandbox | sandbox_exec | wasmtime instance, no network |
+| web-search | http | http | wasi:http, OPA allowed_hosts |
+| email-send | email | send_email | Host fn; creds in Rust host state |
 | email-read | email | (none) | OPA-injected key; no network |
 | responder | llm | llm_complete | LLM only, no I/O |
 

@@ -1,5 +1,9 @@
-use agent_types::{LlmMessage, LlmRequest, LlmResponse, TaskInput, TaskOutput};
-use extism_pdk::*;
+wit_bindgen::generate!({
+    world: "agent",
+    path: "../../../wit/agent.wit",
+});
+
+use wasm_af::agent::host_llm::{llm_complete, LlmMessage, LlmRequest};
 
 #[derive(serde::Deserialize)]
 struct RouterInput {
@@ -41,11 +45,6 @@ struct RouterParams {
     folder: String,
 }
 
-#[host_fn]
-extern "ExtismHost" {
-    fn llm_complete(input: Json<LlmRequest>) -> Json<LlmResponse>;
-}
-
 const SYSTEM_PROMPT: &str = r#"/no_think
 You are a routing assistant. Given a user message, determine which skill to invoke and extract the parameters. Respond with ONLY a valid JSON object, no markdown fences, no explanation, no thinking.
 
@@ -74,69 +73,137 @@ User: "check my email" → {"skill":"email-read","params":{"folder":"inbox"}}
 User: "remember my name is Alice" → {"skill":"direct-answer","params":{}}
 "#;
 
-#[plugin_fn]
-pub fn execute(Json(input): Json<TaskInput>) -> FnResult<Json<TaskOutput>> {
-    let req: RouterInput = serde_json::from_str(&input.payload)
-        .map_err(|e| Error::msg(format!("payload parse error: {e}")))?;
-
-    if req.message.trim().is_empty() {
-        return Err(Error::msg("message field is required and must not be empty").into());
-    }
-
-    let user_content = if req.history.is_empty() {
-        req.message.clone()
-    } else {
-        format!(
-            "Conversation history:\n{}\n\nCurrent message: {}",
-            req.history, req.message
-        )
-    };
-
-    let llm_req = LlmRequest {
-        model: String::new(),
-        messages: vec![
-            LlmMessage {
-                role: "system".to_string(),
-                content: SYSTEM_PROMPT.to_string(),
-            },
-            LlmMessage {
-                role: "user".to_string(),
-                content: user_content,
-            },
-        ],
-        max_tokens: 256,
-        temperature: Some(0.0),
-    };
-
-    let Json(llm_resp) =
-        unsafe { llm_complete(Json(llm_req)).map_err(|e| Error::msg(format!("LLM error: {e}")))? };
-
-    // Strip <think>...</think> blocks that some models (e.g. qwen3) emit
-    // before the actual JSON response.
-    let raw = llm_resp.content.trim();
-    let json_str = match raw.rfind("</think>") {
+fn strip_llm_wrapper(raw: &str) -> &str {
+    let after_think = match raw.rfind("</think>") {
         Some(idx) => raw[idx + "</think>".len()..].trim(),
         None => raw,
     };
-
-    // Strip markdown fences if the model wrapped the JSON in ```json ... ```.
-    let json_str = json_str
+    after_think
         .strip_prefix("```json")
-        .or_else(|| json_str.strip_prefix("```"))
+        .or_else(|| after_think.strip_prefix("```"))
         .and_then(|s| s.strip_suffix("```"))
         .map(|s| s.trim())
-        .unwrap_or(json_str);
+        .unwrap_or(after_think)
+}
 
-    let route: RouterOutput = serde_json::from_str(json_str).unwrap_or_else(|_| RouterOutput {
-        skill: "direct-answer".to_string(),
-        params: RouterParams::default(),
-    });
+struct RouterAgent;
 
-    let payload = serde_json::to_string(&route)
-        .map_err(|e| Error::msg(format!("serialization error: {e}")))?;
+impl Guest for RouterAgent {
+    fn execute(input: TaskInput) -> Result<TaskOutput, String> {
+        let req: RouterInput = serde_json::from_str(&input.payload)
+            .map_err(|e| format!("payload parse error: {e}"))?;
 
-    Ok(Json(TaskOutput {
-        payload,
-        metadata: vec![],
-    }))
+        if req.message.trim().is_empty() {
+            return Err("message field is required and must not be empty".to_string());
+        }
+
+        let user_content = if req.history.is_empty() {
+            req.message.clone()
+        } else {
+            format!(
+                "Conversation history:\n{}\n\nCurrent message: {}",
+                req.history, req.message
+            )
+        };
+
+        let llm_req = LlmRequest {
+            model: String::new(),
+            messages: vec![
+                LlmMessage {
+                    role: "system".to_string(),
+                    content: SYSTEM_PROMPT.to_string(),
+                },
+                LlmMessage {
+                    role: "user".to_string(),
+                    content: user_content,
+                },
+            ],
+            max_tokens: 256,
+            temperature: Some(0.0),
+        };
+
+        let llm_resp = llm_complete(&llm_req).map_err(|e| format!("LLM error: {e}"))?;
+
+        let json_str = strip_llm_wrapper(llm_resp.content.trim());
+
+        let route: RouterOutput = serde_json::from_str(json_str).unwrap_or_else(|_| RouterOutput {
+            skill: "direct-answer".to_string(),
+            params: RouterParams::default(),
+        });
+
+        let payload =
+            serde_json::to_string(&route).map_err(|e| format!("serialization error: {e}"))?;
+
+        Ok(TaskOutput {
+            payload,
+            metadata: vec![],
+        })
+    }
+}
+
+export!(RouterAgent);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_plain_json() {
+        let input = r#"{"skill":"web-search","params":{"query":"test"}}"#;
+        assert_eq!(strip_llm_wrapper(input), input);
+    }
+
+    #[test]
+    fn strip_think_tags() {
+        let input = "<think>reasoning here</think>{\"skill\":\"shell\"}";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"shell\"}");
+    }
+
+    #[test]
+    fn strip_think_tags_with_whitespace() {
+        let input = "<think>reasoning\nmultiline</think>  \n  {\"skill\":\"shell\"}  ";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"shell\"}");
+    }
+
+    #[test]
+    fn strip_markdown_json_fences() {
+        let input = "```json\n{\"skill\":\"web-search\"}\n```";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"web-search\"}");
+    }
+
+    #[test]
+    fn strip_markdown_plain_fences() {
+        let input = "```\n{\"skill\":\"shell\"}\n```";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"shell\"}");
+    }
+
+    #[test]
+    fn strip_think_plus_fences() {
+        let input = "<think>some thought</think>\n```json\n{\"skill\":\"web-search\"}\n```";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"web-search\"}");
+    }
+
+    #[test]
+    fn strip_preserves_inner_content() {
+        let input = "```json\n{\"skill\":\"shell\",\"params\":{\"command\":\"echo ```\"}}\n```";
+        let result = strip_llm_wrapper(input);
+        assert!(result.contains("echo"));
+    }
+
+    #[test]
+    fn strip_no_fences_returns_original() {
+        let input = "just some text without any json";
+        assert_eq!(strip_llm_wrapper(input), input);
+    }
+
+    #[test]
+    fn strip_only_closing_think_takes_last() {
+        let input = "ignored prefix </think> {\"skill\":\"shell\"}";
+        assert_eq!(strip_llm_wrapper(input), "{\"skill\":\"shell\"}");
+    }
+
+    #[test]
+    fn strip_empty_input() {
+        assert_eq!(strip_llm_wrapper(""), "");
+    }
 }

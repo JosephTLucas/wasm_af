@@ -4,7 +4,7 @@
     "allowed_commands": ["ls", "cat", "pwd", "echo", "find", "date", "uname", "wc", "head", "tail"],
     "allowed_paths": ["/tmp/wasmclaw"],
     "allowed_languages": ["python"],
-    "allowed_task_types": ["chat", "email-reply", "skill-demo", "reply-all"],
+    "allowed_task_types": ["chat", "email-reply", "skill-demo", "reply-all", "taint-demo"],
     "web_search_enabled": true,
     "shell_enabled": true,
     "file_ops_enabled": true,
@@ -12,6 +12,7 @@
     "email_send_enabled": true,
     "email_read_enabled": true,
     "approval_enabled": true,
+    "taint_gates_enabled": true,
     "auto_approved_commands": ["ls", "cat", "pwd", "echo", "date", "uname", "wc", "head", "tail"],
     "approved_external_agents": [],
     "jailbreak_patterns": [

@@ -7,7 +7,12 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-agent-types = { path = "../../agent-types" }
-extism-pdk = "1.4"
+wit-bindgen = "0.39"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[package.metadata.component]
+package = "wasm-af:agent"
+
+[lints]
+workspace = true

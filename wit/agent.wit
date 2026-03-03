@@ -1,0 +1,123 @@
+package wasm-af:agent@0.1.0;
+
+interface types {
+    record kv-pair {
+        key: string,
+        val: string,
+        taint: option<list<string>>,
+    }
+
+    record task-input {
+        task-id: string,
+        step-id: string,
+        payload: string,
+        context: list<kv-pair>,
+    }
+
+    record task-output {
+        payload: string,
+        metadata: list<kv-pair>,
+    }
+}
+
+interface host-llm {
+    record llm-message {
+        role: string,
+        content: string,
+    }
+
+    record llm-request {
+        model: string,
+        messages: list<llm-message>,
+        max-tokens: u32,
+        temperature: option<f64>,
+    }
+
+    record llm-response {
+        content: string,
+        model-used: string,
+    }
+
+    llm-complete: func(req: llm-request) -> result<llm-response, string>;
+}
+
+interface host-kv {
+    kv-get: func(key: string) -> result<option<string>, string>;
+    kv-put: func(key: string, value: string) -> result<_, string>;
+}
+
+interface host-exec {
+    record exec-request {
+        command: string,
+        args: list<string>,
+        working-dir: option<string>,
+    }
+
+    record exec-response {
+        stdout: string,
+        stderr: string,
+        exit-code: s32,
+    }
+
+    exec-command: func(req: exec-request) -> result<exec-response, string>;
+}
+
+interface host-sandbox {
+    record sandbox-request {
+        language: string,
+        code: string,
+        args: list<string>,
+        stdin: option<string>,
+    }
+
+    record sandbox-response {
+        stdout: string,
+        stderr: string,
+        exit-code: s32,
+    }
+
+    sandbox-exec: func(req: sandbox-request) -> result<sandbox-response, string>;
+}
+
+interface host-email {
+    record email-request {
+        to: list<string>,
+        subject: string,
+        body: string,
+        reply-to: option<string>,
+    }
+
+    record email-response {
+        message-id: string,
+    }
+
+    send-email: func(req: email-request) -> result<email-response, string>;
+}
+
+interface host-config {
+    get-config: func(key: string) -> option<string>;
+}
+
+/// Full-capability world for platform agents.
+/// Agents import only the interfaces they actually use;
+/// the orchestrator's Linker provides only what OPA permits.
+world agent {
+    import host-llm;
+    import host-kv;
+    import host-exec;
+    import host-sandbox;
+    import host-email;
+    import host-config;
+
+    use types.{task-input, task-output};
+    export execute: func(input: task-input) -> result<task-output, string>;
+}
+
+/// Minimal world for BYOA untrusted agents — no host function imports
+/// beyond read-only config.
+world agent-untrusted {
+    import host-config;
+
+    use types.{task-input, task-output};
+    export execute: func(input: task-input) -> result<task-output, string>;
+}
