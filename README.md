@@ -4,7 +4,7 @@
 
 WASM_AF leverages the sandboxed, ephemeral nature of WebAssembly to create a zero-trust AI agent runtime. Agents are WASM components that are isolated by default, granted capabilities by policy, and destroyed when their work is done.
 
-[![Demo](wasm_demo.gif)](http://jolucas1.nvidia.com:4000/a/y7XzQyKOlKWvOdI3)
+[![Demo](wasm_demo.gif)](http://jolucas1.nvidia.com:4000/a/4a5U83GwMRT5ljAV)
 
 ---
 
