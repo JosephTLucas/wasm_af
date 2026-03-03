@@ -30,56 +30,28 @@ Most agent frameworks enforce security through **convention**: configure your to
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│              Rust Orchestrator Binary (axum)                │
-│                                                             │
-│  ┌──────────┐  ┌──────────────┐  ┌───────────────────────┐  │
-│  │ HTTP API │  │ Plan Builder │  │ Task State (NATS KV)  │  │
-│  │ :8080    │──│              │──│ + Audit Log           │  │
-│  └──┬───────┘  └──────┬───────┘  └───────────────────────┘  │
-│     │                 │                                      │
-│     │ POST /agents    │                                      │
-│     ▼                 │                                      │
-│  ┌──────────────┐     │                                      │
-│  │ BYOA Upload  │     │                                      │
-│  │ • validate   │     │                                      │
-│  │ • WIT check  ├─────┤  Agent Registry (thread-safe)        │
-│  │ • persist KV │     │  • platform agents (startup JSON)    │
-│  └──────────────┘     │  • external agents (runtime upload)  │
-│                       │                                      │
-│            ┌──────────┴──────────┐                           │
-│            │     Step Runner     │                           │
-│            │  (parallel dispatch)│                           │
-│            └──┬──────┬──────┬───┘                           │
-│               │      │      │    per step:                  │
-│            ┌──▼──┐┌──▼──┐┌──▼──┐  compose Linker            │
-│            │load ││load ││load │  → link permitted caps      │
-│            │.wasm││.wasm││.wasm│  → call execute()           │
-│            └──┬──┘└──┬──┘└──┬──┘  → drop instance            │
-│               │      │      │                                │
-│  ┌────────────▼──────▼──────▼────────────┐                   │
-│  │     wasmtime Component Model Runtime  │                   │
-│  │  • selective Linker per instance      │                   │
-│  │  • WIT-typed host function imports    │                   │
-│  │  • fuel-based timeout per invocation   │                   │
-│  │  • StoreLimits (memory)               │                   │
-│  │  • Canonical ABI (no manual serde)    │                   │
-│  └───────────────────────────────────────┘                   │
-│                                                              │
-│  ┌──────────────────────────────────────────┐                │
-│  │  OPA Policy Engine (regorus, embedded)   │                │
-│  │  • structured decisions: allowed_hosts,  │                │
-│  │    memory, timeout, config, paths,       │                │
-│  │    host_functions                        │                │
-│  └──────────────────────────────────────────┘                │
-│                                                              │
-│  ┌──────────────────────────────────────────┐                │
-│  │  WIT Interface Registry                  │                │
-│  │  • linked selectively per step via OPA   │                │
-│  │  • missing import → instantiation fails  │                │
-│  └──────────────────────────────────────────┘                │
-└──────────────────────────────────────────────────────────────┘
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Orchestrator
+    participant OPA
+    participant NATS
+    participant Agent as Agent (WASM)
+
+    Client->>Orchestrator: POST /message (or /tasks)
+    Orchestrator->>Orchestrator: build DAG of steps
+    Orchestrator->>NATS: persist task state
+
+    loop for each ready step (parallel)
+        Orchestrator->>OPA: evaluate step capabilities
+        OPA-->>Orchestrator: allowed host functions, limits
+        Orchestrator->>Agent: instantiate with selective Linker
+        Agent-->>Orchestrator: execute() result
+        Note right of Agent: instance dropped immediately
+        Orchestrator->>NATS: write result + audit entry
+    end
+
+    Orchestrator-->>Client: task result
 ```
 
 The orchestrator is a single Rust binary that embeds the [wasmtime](https://wasmtime.dev/) Component Model runtime. For each task step, it composes a `Linker` with only the host interfaces OPA permits, instantiates the agent component, calls its `execute` export, reads the result, and drops the instance.
