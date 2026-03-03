@@ -13,7 +13,7 @@ variables:
 
 rust-lint:
   stage: lint
-  image: rust:1.85
+  image: rust:1.91
   before_script:
     - rustup target add wasm32-wasip2
     - rustup component add clippy rustfmt
@@ -54,7 +54,7 @@ opa-lint:
 
 rust-test:
   stage: test
-  image: rust:1.85
+  image: rust:1.91
   before_script:
     - rustup target add wasm32-wasip2
   script:
@@ -87,7 +87,7 @@ opa-test:
 
 build-plugins:
   stage: build
-  image: rust:1.85
+  image: rust:1.91
   before_script:
     - rustup target add wasm32-wasip2
   script:
@@ -106,7 +106,7 @@ build-plugins:
 
 build-orchestrator:
   stage: build
-  image: rust:1.85
+  image: rust:1.91
   script:
     - mkdir -p bin
     - cargo build --release -p wasm-af-orchestrator
