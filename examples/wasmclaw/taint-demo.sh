@@ -9,7 +9,7 @@
 #   3. Declassification:     web-search → summarizer → responder (runs clean)
 #
 # Usage:
-#   make taint-demo                     (needs NV_API_KEY + BRAVE_API_KEY in .env)
+#   make taint-demo                     (needs LLM_API_KEY + LLM_BASE_URL + BRAVE_API_KEY in .env)
 #   LLM_MODE=api ./taint-demo.sh
 set -uo pipefail
 

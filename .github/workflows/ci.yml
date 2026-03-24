@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "10"
+  RUST_BACKTRACE: short
+
+jobs:
+  rust-lint:
+    name: Rust lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            components
+      - name: cargo fmt (root)
+        run: cargo fmt --all --check
+      - name: cargo fmt (components)
+        run: cargo fmt --check
+        working-directory: components
+      - name: clippy (root)
+        run: cargo clippy --workspace -- -D warnings
+      - name: clippy (components)
+        run: |
+          HOST_TARGET=$(rustc -vV | grep host | awk '{print $2}')
+          cargo clippy --target "$HOST_TARGET" -- -D warnings
+        working-directory: components
+
+  opa-lint:
+    name: OPA lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: open-policy-agent/setup-opa@v2
+      - name: opa fmt
+        run: |
+          BAD=""
+          for f in $(find . -name '*.rego' -not -path '*/target/*'); do
+            if ! opa fmt --fail "$f"; then
+              BAD="$BAD $f"
+            fi
+          done
+          if [ -n "$BAD" ]; then
+            echo "opa fmt needed on:$BAD"
+            exit 1
+          fi
+
+  rust-test:
+    name: Rust test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            components
+      - name: test (root)
+        run: cargo test --workspace
+      - name: test (components)
+        run: |
+          HOST_TARGET=$(rustc -vV | grep host | awk '{print $2}')
+          cargo test --workspace --target "$HOST_TARGET"
+        working-directory: components
+
+  opa-test:
+    name: OPA test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: open-policy-agent/setup-opa@v2
+      - name: opa test
+        run: |
+          for d in examples/*/; do
+            if ls "$d"*_test.rego >/dev/null 2>&1; then
+              echo "=== $d ==="
+              opa test "$d" -v
+            fi
+          done
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            components
+      - name: Build WASM components
+        run: cargo build --release
+        working-directory: components
+      - name: Build orchestrator
+        run: |
+          mkdir -p bin
+          cargo build --release -p wasm-af-orchestrator
+          cp target/release/orchestrator bin/orchestrator
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasm-components
+          path: components/target/wasm32-wasip2/release/*.wasm
+          retention-days: 7
+      - name: Upload orchestrator
+        uses: actions/upload-artifact@v4
+        with:
+          name: orchestrator
+          path: bin/orchestrator
+          retention-days: 7

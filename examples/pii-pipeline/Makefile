@@ -8,7 +8,7 @@ LLM_MODE  ?= mock
 demo: build ## Build + run with current LLM_MODE (default: mock)
 	@LLM_MODE=$(LLM_MODE) $(ROOT)/examples/pii-pipeline/run.sh
 
-demo-api: build ## Build + run with NVIDIA NIM API (needs NV_API_KEY in .env or env)
+demo-api: build ## Build + run with remote API (needs LLM_API_KEY + LLM_BASE_URL in .env or env)
 	@LLM_MODE=api $(ROOT)/examples/pii-pipeline/run.sh
 
 ##@ Setup

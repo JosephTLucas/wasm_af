@@ -64,7 +64,7 @@ demo: wasmclaw ## Run wasmclaw demo (mock LLM)
 wasmclaw-demo: wasmclaw ## Run wasmclaw demo (mock LLM)
 	@cd examples/wasmclaw && make demo
 
-wasmclaw-demo-api: wasmclaw ## Run wasmclaw with NVIDIA NIM API
+wasmclaw-demo-api: wasmclaw ## Run wasmclaw with remote API (needs LLM_API_KEY)
 	@cd examples/wasmclaw && LLM_MODE=api make demo
 
 wasmclaw-demo-real: wasmclaw ## Run wasmclaw with local Ollama

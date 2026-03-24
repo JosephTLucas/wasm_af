@@ -22,8 +22,8 @@ cd "$ROOT"
 [ -f "$ROOT/.env" ] && set -a && . "$ROOT/.env" && set +a
 
 LLM_MODE="${LLM_MODE:-mock}"
-NV_API_KEY="${NV_API_KEY:-${LLM_API_KEY:-}}"
-NV_MODEL="${NV_MODEL:-meta/llama-3.3-70b-instruct}"
+LLM_API_KEY="${LLM_API_KEY:-}"
+LLM_MODEL="${LLM_MODEL:-gpt-4o-mini}"
 DOC_PORT="${DOC_PORT:-8888}"
 EXAMPLE_DIR="$ROOT/examples/pii-pipeline"
 
@@ -149,11 +149,12 @@ if lsof -ti:8080 >/dev/null 2>&1; then
 fi
 
 if [ "$LLM_MODE" = "api" ]; then
-    _LLM_BASE_URL="${LLM_BASE_URL:-https://integrate.api.nvidia.com/v1}"
-    _LLM_API_KEY="$NV_API_KEY"
-    _LLM_MODEL="$NV_MODEL"
+    _LLM_BASE_URL="$LLM_BASE_URL"
+    _LLM_API_KEY="$LLM_API_KEY"
+    _LLM_MODEL="$LLM_MODEL"
     _PLUGIN_TIMEOUT=120
-    [ -n "$NV_API_KEY" ] || die "LLM_MODE=api requires NV_API_KEY."
+    [ -n "$LLM_API_KEY" ] || die "LLM_MODE=api requires LLM_API_KEY."
+    [ -n "${LLM_BASE_URL:-}" ] || die "LLM_MODE=api requires LLM_BASE_URL."
 else
     _LLM_BASE_URL="${LLM_BASE_URL:-http://localhost:11434}"
     _LLM_API_KEY="${LLM_API_KEY:-}"

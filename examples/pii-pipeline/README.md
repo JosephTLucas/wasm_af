@@ -19,7 +19,7 @@ url-fetch (platform, HTTP) → pii-redactor (BYOA, Python) → responder (platfo
 ```bash
 cd examples/pii-pipeline
 make demo                      # mock LLM (deterministic, no external deps)
-LLM_MODE=api make demo         # NVIDIA NIM API (needs NV_API_KEY)
+LLM_MODE=api make demo         # OpenAI-compatible API (needs LLM_API_KEY + LLM_BASE_URL)
 ```
 
 Prerequisites: Rust (with `wasm32-wasip2` target), NATS, jq, Python 3, Docker (for building the Python agent on macOS 26+) or `componentize-py`.

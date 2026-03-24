@@ -4,21 +4,22 @@
 
 WASM_AF leverages the sandboxed, ephemeral nature of WebAssembly to create a zero-trust AI agent runtime. Agents are WASM components that are isolated by default, granted capabilities by policy, and destroyed when their work is done.
 
-[![Demo](wasm_demo.gif)](http://jolucas1.nvidia.com:4000/a/4a5U83GwMRT5ljAV)
+![Demo](wasm_demo.gif)
 
 ---
 
 ## Quick Start
 
 ```bash
-export NV_API_KEY="nvapi-..."
+export LLM_API_KEY="your-key-here"
+export LLM_BASE_URL="https://api.openai.com/v1"
 cd examples/wasmclaw
 LLM_MODE=api make reply-all-demo
 ```
 
 Prerequisites: [Rust](https://rustup.rs/) (with `wasm32-wasip2` target), [NATS server](https://nats.io/) (or [wash](https://wasmcloud.com/docs/installation/) which bundles one), [jq](https://jqlang.github.io/jq/).
 
-For API inference, set `NV_API_KEY` in a `.env` file at the repo root (gitignored) or export it in your shell.
+For API inference, set `LLM_API_KEY` and `LLM_BASE_URL` in a `.env` file at the repo root (gitignored) or export them in your shell.
 
 ---
 
@@ -108,6 +109,12 @@ requires_approval if {
 
 ## API
 
+### Health
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/healthz` | Returns `200 OK` when the orchestrator is ready |
+
 ### Task Lifecycle
 
 | Method | Path | Description |
@@ -157,6 +164,9 @@ wasm_af/
 ├── wit/
 │   └── agent.wit                   # WIT interface definitions (the agent contract)
 │
+├── docs/
+│   └── creating-an-agent.md        # guide: platform agents + BYOA walkthrough
+│
 ├── crates/
 │   ├── orchestrator/               # the framework — Rust binary (axum + wasmtime)
 │   │   ├── src/
@@ -173,7 +183,10 @@ wasm_af/
 │   │   └── src/lib.rs
 │   │
 │   └── taskstate/                  # NATS JetStream KV: task state, audit log, payloads
-│       └── src/lib.rs
+│       └── src/
+│           ├── lib.rs
+│           ├── store.rs            # KV store implementation
+│           └── types.rs            # shared types (Status, TaskState, etc.)
 │
 ├── policies/                       # reusable OPA policy modules
 │   └── byoa.rego                   # untrusted-agent sandbox tier
@@ -208,6 +221,7 @@ wasm_af/
         ├── agents.json             # agent registry (includes output_taint, declassifies)
         ├── policy.rego             # step policy (capability gates + taint-aware rules)
         ├── submit.rego             # submission policy
+        ├── jailbreak.rego          # prompt injection / jailbreak detection rules
         ├── data.json               # allowlists, feature flags, taint gates, jailbreak patterns
         ├── *_test.rego             # 92 OPA tests (opa test .)
         └── Makefile
@@ -222,10 +236,10 @@ wasm_af/
 ```bash
 cd examples/wasmclaw
 make demo                              # mock LLM (deterministic, no deps)
-LLM_MODE=api make demo                 # NVIDIA NIM API (needs NV_API_KEY)
+LLM_MODE=api make demo                 # OpenAI-compatible API (needs LLM_API_KEY + LLM_BASE_URL)
 make reply-all-demo                    # parallel DAG: jailbreak + approval (interactive Y/n)
 make taint-demo                        # taint tracking: deny, approval gate, declassification
-                                       #   (needs NV_API_KEY + BRAVE_API_KEY in .env)
+                                       #   (needs LLM_API_KEY + LLM_BASE_URL + BRAVE_API_KEY in .env)
 ```
 
 ### PII Pipeline (Bring Your Own Agent)
@@ -233,7 +247,7 @@ make taint-demo                        # taint tracking: deny, approval gate, de
 ```bash
 cd examples/pii-pipeline
 make demo                              # mock LLM (deterministic, no deps)
-LLM_MODE=api make demo                 # NVIDIA NIM API (needs NV_API_KEY)
+LLM_MODE=api make demo                 # OpenAI-compatible API (needs LLM_API_KEY + LLM_BASE_URL)
 ```
 
 ### Prompt Injection
@@ -257,10 +271,10 @@ cd examples/prompt-injection && make demo    # requires Ollama (pulls model auto
 | `OPA_DATA` | — | Path to a JSON data file (populates OPA data store at startup) |
 | `AGENT_REGISTRY_FILE` | — | Path to JSON agent registry file (required) |
 | `AGENT_REGISTRY` | — | Inline JSON agent registry (takes precedence over file) |
-| `LLM_MODE` | `mock` | `mock` for deterministic routing, `api` for remote inference (NVIDIA NIM, etc.), `real` for local Ollama |
+| `LLM_MODE` | `mock` | `mock` for deterministic routing, `api` for remote inference (any OpenAI-compatible endpoint), `real` for local Ollama |
 | `LLM_BASE_URL` | — | OpenAI-compatible API base URL |
 | `LLM_API_KEY` | — | API key for the LLM endpoint (required when `LLM_MODE=api`) |
-| `LLM_MODEL` | `gpt-4o-mini` | Model name for the LLM endpoint (overridden by `NV_MODEL` in demo scripts) |
+| `LLM_MODEL` | `gpt-4o-mini` | Model name for the LLM endpoint |
 | `LLM_TEMPERATURE` | — | Default sampling temperature |
 | `LLM_TIMEOUT_SEC` | `120` | HTTP client timeout for LLM API calls |
 | `PLUGIN_TIMEOUT_SEC` | `30` | Max wall-clock seconds per component invocation |
@@ -276,12 +290,9 @@ cd examples/prompt-injection && make demo    # requires Ollama (pulls model auto
 | `APPROVAL_WEBHOOK_URL` | — | URL to POST approval events |
 | `APPROVAL_TIMEOUT_SEC` | `0` | Auto-reject steps after N seconds (0 = no timeout) |
 
-### NVIDIA NIM API
+### API Mode
 
-| Variable | Maps to | Default |
-|---|---|---|
-| `NV_API_KEY` | `LLM_API_KEY` | — |
-| `NV_MODEL` | `LLM_MODEL` | `meta/llama-3.3-70b-instruct` |
+When `LLM_MODE=api`, the orchestrator connects to any OpenAI-compatible inference endpoint. Set `LLM_BASE_URL` and `LLM_API_KEY` in your environment or `.env` file. Any model available at the endpoint can be selected via `LLM_MODEL`.
 
 ---
 

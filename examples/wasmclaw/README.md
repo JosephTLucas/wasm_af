@@ -4,11 +4,11 @@ Multi-skill chat assistant where every skill runs in a WASM sandbox gated by OPA
 
 ```bash
 make demo                              # mock LLM (deterministic routing)
-LLM_MODE=api make demo                 # NVIDIA NIM API (needs NV_API_KEY)
+LLM_MODE=api make demo                 # OpenAI-compatible API (needs LLM_API_KEY + LLM_BASE_URL)
 LLM_MODE=real make demo                # local Ollama
 ```
 
-For API inference, set `NV_API_KEY` in `.env` at the repo root. Default model: `nvdev/nvidia/llama-3.3-nemotron-super-49b-v1` (override with `NV_MODEL`).
+For API inference, set `LLM_API_KEY` and `LLM_BASE_URL` in `.env` at the repo root. Override the model with `LLM_MODEL`.
 
 Prerequisites: Rust (wasm32-wasip2 target), jq, `nats-server`. Optional: `opa`, `wasm-tools`.
 

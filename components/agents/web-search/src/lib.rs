@@ -131,7 +131,7 @@ fn mock_results(query: &str) -> Vec<SearchResult> {
         },
         SearchResult {
             title: "wasm-af documentation".to_string(),
-            url: "https://github.com/jolucas/wasm-af".to_string(),
+            url: "https://example.com/wasm-af".to_string(),
             snippet: "WebAssembly agent framework. Policy-gated, orchestrated WASM agents."
                 .to_string(),
         },

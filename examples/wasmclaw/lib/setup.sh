@@ -18,8 +18,8 @@ cd "$ROOT"
 
 LLM_MODE="${LLM_MODE:-mock}"
 MODEL="${MODEL:-qwen3:4b}"
-NV_API_KEY="${NV_API_KEY:-${LLM_API_KEY:-}}"
-NV_MODEL="${NV_MODEL:-meta/llama-3.3-70b-instruct}"
+LLM_API_KEY="${LLM_API_KEY:-}"
+LLM_MODEL="${LLM_MODEL:-gpt-4o-mini}"
 
 # ── ANSI colors (disabled when piped or NO_COLOR is set) ─────────────────────
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -123,9 +123,10 @@ echo ""
 
 # ── 2. LLM backend ───────────────────────────────────────────────────────────
 if [ "$LLM_MODE" = "api" ]; then
-    echo "  ${BLD}[2/4]${RST} LLM backend: ${CYN}API${RST} (NVIDIA NIM)"
-    [ -n "$NV_API_KEY" ] || die "LLM_MODE=api requires NV_API_KEY (or LLM_API_KEY). Export it or add to .env"
-    echo "        Model: ${CYN}$NV_MODEL${RST}"
+    echo "  ${BLD}[2/4]${RST} LLM backend: ${CYN}API${RST} (Remote)"
+    [ -n "$LLM_API_KEY" ] || die "LLM_MODE=api requires LLM_API_KEY. Export it or add to .env"
+    [ -n "${LLM_BASE_URL:-}" ] || die "LLM_MODE=api requires LLM_BASE_URL. Export it or add to .env"
+    echo "        Model: ${CYN}$LLM_MODEL${RST}"
 elif [ "$LLM_MODE" = "real" ]; then
     echo "  ${BLD}[2/4]${RST} LLM backend: ${CYN}Ollama${RST} ($MODEL)"
     command -v ollama >/dev/null 2>&1 || die "ollama not found. Install from https://ollama.com"
@@ -187,9 +188,9 @@ if lsof -ti:8080 >/dev/null 2>&1; then
 fi
 
 if [ "$LLM_MODE" = "api" ]; then
-    _LLM_BASE_URL="${LLM_BASE_URL:-https://integrate.api.nvidia.com/v1}"
-    _LLM_API_KEY="$NV_API_KEY"
-    _LLM_MODEL="$NV_MODEL"
+    _LLM_BASE_URL="$LLM_BASE_URL"
+    _LLM_API_KEY="$LLM_API_KEY"
+    _LLM_MODEL="$LLM_MODEL"
     _LLM_TEMPERATURE="${LLM_TEMPERATURE:-0.2}"
     _LLM_TOP_P="${LLM_TOP_P:-0.7}"
 else

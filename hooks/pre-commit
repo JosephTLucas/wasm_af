@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Pre-commit hook that mirrors the GitLab CI lint stage.
+# Pre-commit hook that mirrors the CI lint stage.
 # Install with: make install-hooks
 #
 # Checks (in order, fast-fail):

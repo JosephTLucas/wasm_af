@@ -3,7 +3,7 @@
 #
 # Usage:
 #   make demo                        (recommended — mock LLM)
-#   LLM_MODE=api make demo           (NVIDIA NIM API — needs NV_API_KEY)
+#   LLM_MODE=api make demo           (remote API — needs LLM_API_KEY + LLM_BASE_URL)
 #   LLM_MODE=real make demo          (local Ollama)
 set -uo pipefail
 
